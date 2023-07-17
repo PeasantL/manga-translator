@@ -4,17 +4,20 @@ import sys
 from ultralytics import YOLO
 from requests.utils import requote_uri
 from translator.utils import (
-    generate_bubble_mask,
+    mask_text_and_make_bubble_mask,
     draw_text_in_bubble,
     get_bounds_for_text,
     fix_intersection,
     inpaint_optimized,
-    debug_image
+    debug_image,
+    prep_color_detection_sample
 )
+import threading
 import torch
 import concurrent
-from translator.translators import Translator
-from translator.ocr import BaseOcr
+from translator.color_detect.models import get_color_detection_model
+from translator.core.translators import Translator
+from translator.core.ocr import BaseOcr
 
 
 # def inpaint(image, mask, radius=2, iterations=3):
@@ -41,6 +44,7 @@ class FullConversion:
         self,
         detect_model="models/detection.pt",
         seg_model="models/segmentation.pt",
+        color_detect_model="models/color_detection.pt",
         translator=Translator(),
         ocr=BaseOcr(),
         font_file="fonts/animeace2_reg.ttf",
@@ -48,10 +52,17 @@ class FullConversion:
     ) -> None:
         self.segmentation_model = YOLO(seg_model)
         self.detection_model = YOLO(detect_model)
+        try:
+            self.color_detect_model = get_color_detection_model(weights_path=color_detect_model,device=torch.device("cuda:0"))
+            self.color_detect_model.eval()
+        except:
+            pass
+
         self.translator = translator
         self.ocr = ocr
         self.debug = debug
         self.font_file = font_file
+        self.frame_process_mutex = threading.Lock()
 
     def filter_results(self, results, min_confidence=0.1):
         bounding_boxes = np.array(results.boxes.xyxy.cpu(), dtype="int")
@@ -79,15 +90,16 @@ class FullConversion:
     def process_ml_results(self,detect_result,seg_result,frame):
         text_mask = np.zeros_like(frame, dtype=frame.dtype)
 
-        if seg_result.masks is not None:
+        if seg_result.masks is not None: # Fill in segmentation results
             for seg in list(
                 map(lambda a: a.astype("int"), seg_result.masks.xy)
             ):
                 cv2.fillPoly(text_mask, [seg], (255, 255, 255))
+            
 
         detect_result = self.filter_results(detect_result)
         
-        for bbox, cls, conf in detect_result:
+        for bbox, cls, conf in detect_result: # fill in text free results
                 if cls == "text_free":
                     (x1, y1, x2, y2) = bbox
                     text_mask = cv2.rectangle(text_mask,(x1,y1),(x2,y2),(255,255,255),-1)
@@ -130,13 +142,13 @@ class FullConversion:
                 # debug_image(inpainted, "Inpainted")
                 # # if len(bubble.shape) < 3:
                 # #     continue
-                text_only, bubble_mask = generate_bubble_mask(
+                text_only, bubble_mask = mask_text_and_make_bubble_mask(
                     bubble, bubble_text_mask, bubble_clean
                 )
 
                 frame[y1:y2, x1:x2] = bubble_clean
-                text_bounds = get_bounds_for_text(bubble_mask)
-                to_translate.append([bbox, bubble, text_only, text_bounds])
+                text_draw_bounds = get_bounds_for_text(bubble_mask)
+                to_translate.append([bbox, bubble, text_only, text_draw_bounds])
                 # debug_image(text_only,"Text Only")
             else:
                 frame[y1:y2, x1:x2] = frame_clean[y1:y2, x1:x2]
@@ -239,17 +251,26 @@ class FullConversion:
                     # print("intersection found")
 
         # third pass, draw text
-        for bbox, bubble, text_as_image, text_bounds in to_translate:
+        text_colors = [(0,0,0) for x in to_translate]
+        # with torch.no_grad(): model needs work
+        #     with torch.inference_mode():
+        #         with self.frame_process_mutex: # this may not be needed
+        #             text_colors = [(x.cpu().numpy() * 255).astype(np.uint8) for x in self.color_detect_model(torch.stack([prep_color_detection_sample(x[2]) for x in to_translate]).to(torch.device("cuda:0")))]
+        
+        for i in range(len(to_translate)):
+            bbox, bubble, text_as_image, text_draw_bounds = to_translate[i]
+            text_color = text_colors[i]
             (x1, y1, x2, y2) = bbox
 
             if self.translator and self.ocr:
+                # debug_image(text_as_image,"Item")
                 translation = self.translator(self.ocr, text_as_image)
                 if len(translation.strip()):
                     frame[y1:y2, x1:x2] = draw_text_in_bubble(
-                        bubble, text_bounds, translation,font_file=self.font_file
+                        bubble, text_draw_bounds, translation,font_file=self.font_file,color=text_color
                     )
             else:
-                frame[y1:y2, x1:x2] = draw_text_in_bubble(bubble, text_bounds,font_file=self.font_file)
+                frame[y1:y2, x1:x2] = draw_text_in_bubble(bubble, text_draw_bounds,font_file=self.font_file)
 
         
         return frame
