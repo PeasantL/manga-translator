@@ -12,4 +12,4 @@ else
 fi
 
 # Run the inference script
-python3 server.py
+python3 main.py -f input

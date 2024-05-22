@@ -34,3 +34,5 @@ trans-test/*
 *.env
 .venv
 models/*
+input
+output
