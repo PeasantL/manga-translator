@@ -32,3 +32,5 @@ exa/*
 local/*
 trans-test/*
 *.env
+.venv
+models/*
