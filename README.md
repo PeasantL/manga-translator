@@ -1,7 +1,7 @@
 Forked from https://github.com/TareHimself/manga-translator
 
 
-Additional dependiencies
+Additional dependencies
 
 ```
 sudo apt update
