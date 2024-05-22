@@ -66,6 +66,10 @@ class FullConversion:
         self.yolo_device = yolo_device
         self.segmentation_model = YOLO(seg_model)
         self.detection_model = YOLO(detect_model)
+
+        #issues with color_detect model
+        self.color_detect_model = None
+        """
         try:
             if color_detect_model is not None:
                 self.color_detect_model = get_color_detection_model(
@@ -77,6 +81,7 @@ class FullConversion:
         except:
             self.color_detect_model = None
             traceback.print_exc()
+        """
 
         self.translate_free_text = translate_free_text
         self.translator = translator
@@ -340,6 +345,7 @@ class FullConversion:
             if self.translator and self.ocr and len(to_translate) > 0:
                 bboxes,images = zip(*to_translate)
 
+                #the ocr result, check here for the translation 
                 ocr_results = await self.ocr(list(images))
 
                 translation_results = await self.translator(ocr_results)

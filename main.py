@@ -43,13 +43,19 @@ def json_to_args(args_str: str):
     return args
 
 
-async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str,drawer: int, drawer_args: str):
+async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str):
     converter = FullConversion(
         translator=get_translators()[translator](**json_to_args(translator_args)),
-        ocr=get_ocr()[ocr](**json_to_args(ocr_args)),drawer=get_drawers()[drawer](**json_to_args(drawer_args)),
+        ocr=get_ocr()[ocr](**json_to_args(ocr_args)),
+        drawer=get_drawers()[drawer](**json_to_args(drawer_args)),
     )
+    
     filenames = files
     batches = math.ceil(len(filenames) / 4)
+    output_dir = 'output'  # Define the output directory
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)  # Create the directory if it doesn't exist
+    
     for i in range(batches):
         files_to_convert = filenames[i * 4: (i + 1) * 4]
         for filename, data in zip(
@@ -57,10 +63,8 @@ async def do_convert(files: list[str], translator: int, translator_args: str, oc
         ):
             frame = data
             ext = re.findall(EXTENSION_REGEX, filename)[0]
-            cv2.imwrite(
-                filename[0: len(filename) - (len(ext) + 1)] + "_converted." + ext,
-                frame,
-            )
+            new_filename = os.path.join(output_dir, os.path.basename(filename[0: len(filename) - (len(ext) + 1)]) + "_converted." + ext)
+            cv2.imwrite(new_filename, frame)
         print(f"Converted Batch {i + 1}/{batches}")
 
 
@@ -82,7 +86,7 @@ def main():
     parser.add_argument(
         "-o",
         "--ocr",
-        default=0,
+        default=1,
         type=int,
         help="R|Set the index of the ocr class to use. must be one of the following\n"
              + convert_to_options_list(get_ocr()),
@@ -101,7 +105,7 @@ def main():
     parser.add_argument(
         "-t",
         "--translator",
-        default=0,
+        default=1,
         type=int,
         help="R|Set the index of the translator class to use. must be one of the following\n"
              + convert_to_options_list(get_translators()),
