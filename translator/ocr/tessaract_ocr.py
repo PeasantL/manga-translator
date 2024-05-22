@@ -14,7 +14,7 @@ class TesseractOcr(Ocr):
     """Supports all the languages listed"""
 
     default_language = "jpn"
-    tessaract_path = os.path.abspath("C:\\Program Files\\Tesseract-OCR\\tesseract.exe")
+    tessaract_path = "tesseract"
 
     def __init__(self, language=default_language) -> None:
         import pytesseract
@@ -44,11 +44,9 @@ class TesseractOcr(Ocr):
             pytesseract.pytesseract.tesseract_cmd = TesseractOcr.tessaract_path
             pytesseract.get_tesseract_version()
             return True
-        except:
-            print(
-                "Either pytesseract is having an error or you do not have it installed!."
-            )
-            return False
+        except Exception as e:
+            print(f"Error: {str(e)}")
+        return False
 
     @staticmethod
     def get_arguments() -> list[PluginArgument]:
