@@ -5,7 +5,13 @@ from PIL import Image
 from numpy import ndarray
 import torch
 from translator.core.plugin import Cleaner
-from translator.utils import cv2_to_pil, in_paint_optimized, pil_to_cv2, get_model_path
+from translator.utils import (
+    cv2_to_pil,
+    in_paint_optimized,
+    pil_to_cv2,
+    get_model_path,
+    require_model_file,
+)
 from PIL import Image
 from translator.cleaners.deepfillv2_impl import load_model
 import torch
@@ -33,7 +39,7 @@ class DeepFillV2Cleaner(Cleaner):
             return DeepFillV2Cleaner._model
         else:
             DeepFillV2Cleaner._model = load_model(
-                path, DeepFillV2Cleaner.IN_PAINT_MODEL_DEVICE
+                require_model_file(path), DeepFillV2Cleaner.IN_PAINT_MODEL_DEVICE
             )
             DeepFillV2Cleaner._model_path = path
             return DeepFillV2Cleaner._model

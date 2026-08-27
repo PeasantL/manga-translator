@@ -10,6 +10,7 @@ from translator.utils import (
     TranslatorGlobals,
     has_white,
     get_model_path,
+    require_model_file,
     apply_mask
 )
 from translator.color_detect.utils import apply_transforms
@@ -64,8 +65,8 @@ class FullConversion:
         self.device = device
         print("Pipeline created using",device)
         self.yolo_device = yolo_device
-        self.segmentation_model = YOLO(seg_model)
-        self.detection_model = YOLO(detect_model)
+        self.segmentation_model = YOLO(require_model_file(seg_model))
+        self.detection_model = YOLO(require_model_file(detect_model))
 
         #issues with color_detect model
         self.color_detect_model = None
