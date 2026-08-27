@@ -15,17 +15,27 @@ from translator.core.plugin import (
 class OpenAiTranslator(Translator):
     """Uses an Open Ai Model for translation"""
 
+    # Chat models that accept a temperature. The newer reasoning-style models
+    # (the o-series, and the gpt-5 family over Chat Completions) reject any
+    # temperature other than their default, and this backend sends one, so they
+    # are deliberately not listed here.
     MODELS = [
-        ("GPT 3.5 Turbo", "gpt-3.5-turbo"),
-        ("GPT 4", "gpt-4"),
-        ("GPT 4 0613", "gpt-4-0613"),
-        ("GPT 3.5 Turbo 16K", "gpt-3.5-turbo-16k"),
-        ("GPT 3.5 Turbo 0613", "gpt-3.5-turbo-0613"),
-        ("GPT 3.5 Turbo 0125", "gpt-3.5-turbo-0125")
+        ("GPT 4o mini", "gpt-4o-mini"),
+        ("GPT 4o", "gpt-4o"),
+        ("GPT 4.1 mini", "gpt-4.1-mini"),
+        ("GPT 4.1", "gpt-4.1"),
+        ("GPT 4 Turbo", "gpt-4-turbo"),
     ]
 
+    DEFAULT_MODEL = MODELS[0][1]
+    DEFAULT_TEMPERATURE = "0.2"
+
     def __init__(
-        self, api_key="", target_lang="en", model=MODELS[5][1], temp="0.2"
+        self,
+        api_key="",
+        target_lang="en",
+        model=DEFAULT_MODEL,
+        temp=DEFAULT_TEMPERATURE,
     ) -> None:
         super().__init__()
         import openai
@@ -47,6 +57,7 @@ class OpenAiTranslator(Translator):
 
         result = self.openai.chat.completions.create(
             model=self.model,
+            temperature=self.temp,
             messages=[
                 {"role": "user", "content": "EN to JA\nHello"},
                 {"role": "assistant", "content": "こんにちは"},
@@ -94,6 +105,12 @@ class OpenAiTranslator(Translator):
                         OpenAiTranslator.MODELS,
                     )
                 ),
-                default=OpenAiTranslator.MODELS[0][1],
+                default=OpenAiTranslator.DEFAULT_MODEL,
+            ),
+            PluginTextArgument(
+                id="temp",
+                name="Temperature",
+                description="Sampling temperature, 0 to 2. Lower is more literal.",
+                default=OpenAiTranslator.DEFAULT_TEMPERATURE,
             ),
         ]
