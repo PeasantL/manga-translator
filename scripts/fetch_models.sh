@@ -6,8 +6,7 @@
 # the upstream project's release assets.
 #
 # Usage:
-#   ./scripts/fetch_models.sh          # required models only (~373 MB)
-#   ./scripts/fetch_models.sh --all    # also color_detection.pt (~96 MB)
+#   ./scripts/fetch_models.sh          # the two required models (~258 MB)
 #   ./scripts/fetch_models.sh --force  # re-download files that already exist
 #
 # Override the source with MODELS_BASE_URL, or the destination with MODELS_DIR.
@@ -20,21 +19,17 @@ MODELS_DIR="${MODELS_DIR:-$REPO_ROOT/models}"
 MODELS_RELEASE="${MODELS_RELEASE:-2024.01.31}"
 MODELS_BASE_URL="${MODELS_BASE_URL:-https://github.com/TareHimself/manga-translator/releases/download/$MODELS_RELEASE}"
 
-# Required by every run: bubble detection, text segmentation, bubble inpainting.
-REQUIRED_MODELS=(detection.pt segmentation.pt inpainting.pt)
+# Required by every run: bubble detection and text segmentation. The LaMa
+# cleaner fetches its own weights on first use.
+REQUIRED_MODELS=(detection.pt segmentation.pt)
 
-# Only used by the text colour detection stage, which is currently disabled.
-OPTIONAL_MODELS=(color_detection.pt)
-
-FETCH_OPTIONAL=0
 FORCE=0
 
 for arg in "$@"; do
     case "$arg" in
-        --all)   FETCH_OPTIONAL=1 ;;
         --force) FORCE=1 ;;
         -h|--help)
-            sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+            sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0
             ;;
         *)
@@ -46,9 +41,6 @@ for arg in "$@"; do
 done
 
 models=("${REQUIRED_MODELS[@]}")
-if [ "$FETCH_OPTIONAL" -eq 1 ]; then
-    models+=("${OPTIONAL_MODELS[@]}")
-fi
 
 mkdir -p "$MODELS_DIR"
 

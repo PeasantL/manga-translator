@@ -1,5 +1,4 @@
 import numpy as np
-from translator.utils import run_in_thread_decorator
 
 class PluginArgumentType:
     TEXT = 0

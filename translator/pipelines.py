@@ -1,50 +1,22 @@
 import time
 import cv2
 import numpy as np
-import sys
 from ultralytics import YOLO
 from translator.utils import (
-    display_image,
     mask_text_and_make_bubble_mask,
     get_bounds_for_text,
     TranslatorGlobals,
     has_white,
     get_model_path,
     require_model_file,
-    apply_mask
+    apply_mask,
 )
-from translator.color_detect.utils import apply_transforms
 import traceback
-import threading
 import torch
 import asyncio
-from typing import Union
-from concurrent.futures import ThreadPoolExecutor
-from translator.color_detect.models import get_color_detection_model
 from translator.core.plugin import Drawable, Translator, Ocr, Drawer, Cleaner
-from translator.cleaners.deepfillv2 import DeepFillV2Cleaner
+from translator.cleaners.lama import LamaCleaner
 from translator.drawers.horizontal import HorizontalDrawer
-
-
-# def inpaint(image, mask, radius=2, iterations=3):
-#     result = image
-#     for i in range(iterations):
-#         result = cv2.inpaint(
-#             result,
-#             mask,
-#             radius,
-#             cv2.INPAINT_NS,
-#         )
-#     return result
-
-TranslatorGlobals.COLOR_BLACK
-
-
-def resize_percent(image, dest_percent=50):
-    width = int(image.shape[1] * dest_percent / 100)
-    height = int(image.shape[0] * dest_percent / 100)
-    dim = (width, height)
-    return cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
 
 
 class FullConversion:
@@ -52,11 +24,10 @@ class FullConversion:
         self,
         detect_model: str = get_model_path("detection.pt"),
         seg_model: str = get_model_path("segmentation.pt"),
-        color_detect_model: Union[str, None] = get_model_path("color_detection.pt"), # Performance is not where I would like it to be at,
         translator: Translator = Translator(),
         ocr: Ocr = Ocr(),
         drawer: Drawer = HorizontalDrawer(),
-        cleaner: Cleaner = DeepFillV2Cleaner(),
+        cleaner: Cleaner = LamaCleaner(),
         translate_free_text: bool = False,
         device=torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu"),
         yolo_device=0 if torch.cuda.is_available() else "cpu",
@@ -68,29 +39,12 @@ class FullConversion:
         self.segmentation_model = YOLO(require_model_file(seg_model))
         self.detection_model = YOLO(require_model_file(detect_model))
 
-        #issues with color_detect model
-        self.color_detect_model = None
-        """
-        try:
-            if color_detect_model is not None:
-                self.color_detect_model = get_color_detection_model(
-                    weights_path=color_detect_model, device=self.device
-                )
-                self.color_detect_model.eval()
-            else:
-                self.color_detect_model = None
-        except:
-            self.color_detect_model = None
-            traceback.print_exc()
-        """
-
         self.translate_free_text = translate_free_text
         self.translator = translator
         self.ocr = ocr
         self.drawer = drawer
         self.debug = debug
         self.cleaner = cleaner
-        self.frame_process_mutex = threading.Lock()
 
     def filter_results(self, results, min_confidence=0.1):
         bounding_boxes = np.array(results.boxes.xyxy.cpu(), dtype="int")
@@ -101,33 +55,13 @@ class FullConversion:
 
         raw_results: list[tuple[tuple[int, int, int, int], str, float]] = []
 
-        # has_similar = False
-        #         for item, _, __ in filtered:
-        #             print(np.absolute(item - box))
-        #             diff = np.average(np.absolute(item - box))
-        #             if diff < 10:
-        #                 has_similar = True
-        #                 break
-        #         if has_similar:
-        #             continue
-        
         for box, obj_class, conf in zip(bounding_boxes, classes, confidence):
             if conf >= min_confidence:
                 raw_results.append((box, results.names[obj_class], conf))
 
-        raw_results.sort(key= lambda a: 1 - a[2])
+        raw_results.sort(key=lambda a: 1 - a[2])
 
-        results: list[tuple[tuple[int, int, int, int], str, float]] = []
-
-        # print(f"Starting with {len(raw_results)} results")
-        # while len(raw_results) > 0:
-        #     results.append(raw_results[0])
-        #     raw_results = list(filter(lambda a: iou(raw_results[0][0],a[0]) < 0.5,raw_results))
-
-        results = raw_results
-
-        # print(f"Ended with {len(results)} results")
-        return results
+        return raw_results
 
     async def process_ml_results(self, detect_result, seg_result, frame):
         text_mask = np.zeros_like(frame, dtype=frame.dtype)
@@ -165,10 +99,6 @@ class FullConversion:
             # First pass, mask all bubbles
             for bbox, cls, conf in detect_result:
                 try:
-                    # if conf < 0.65:
-                    #     continue
-
-                    # print(get_ocr(get_box_section(frame, box)))
                     color = (0, 0, 255) if cls == 1 else (0, 255, 0)
 
                     (x1, y1, x2, y2) = bbox
@@ -198,10 +128,9 @@ class FullConversion:
                             pt1_y += y1
                             pt2_y += y1
 
-                            to_translate.append([(pt1_x, pt1_y, pt2_x, pt2_y), text_only])
-
-                            # frame = cv2.rectangle(frame,(x1,y1),(x2,y2),color=(255,255,0),thickness=2)
-                            # debug_image(text_only,"Text Only")
+                            to_translate.append(
+                                [(pt1_x, pt1_y, pt2_x, pt2_y), text_only]
+                            )
                     else:
                         if self.translate_free_text:
                             free_text = frame[y1:y2, x1:x2]
@@ -229,115 +158,15 @@ class FullConversion:
                 except:
                     traceback.print_exc()
 
-            # second pass, fix intersecting text areas
-            # for i in range(len(to_translate)):
-            #     bbox_a = to_translate[i][0]
-            #     text_bounds_a_local = to_translate[i][3]
-            #     text_bounds_a = [
-            #         [
-            #             text_bounds_a_local[0][0] + bbox_a[0],
-            #             text_bounds_a_local[0][1] + bbox_a[1],
-            #         ],
-            #         [
-            #             text_bounds_a_local[1][0] + bbox_a[0],
-            #             text_bounds_a_local[1][1] + bbox_a[1],
-            #         ],
-            #     ]
-            #     for x in range(len(to_translate)):
-            #         if x == i:
-            #             continue
-
-            #         bbox_b = to_translate[x][0]
-            #         text_bounds_b_local = to_translate[x][3]
-            #         text_bounds_b = [
-            #             [
-            #                 text_bounds_b_local[0][0] + bbox_b[0],
-            #                 text_bounds_b_local[0][1] + bbox_b[1],
-            #             ],
-            #             [
-            #                 text_bounds_b_local[1][0] + bbox_b[0],
-            #                 text_bounds_b_local[1][1] + bbox_b[1],
-            #             ],
-            #         ]
-
-            #         fix_result = fix_intersection(
-            #             text_bounds_a[0],
-            #             text_bounds_a[1],
-            #             text_bounds_b[0],
-            #             text_bounds_b[1],
-            #         )
-            #         found_intersection = fix_result[4]
-            #         if found_intersection:
-            #             to_translate[i][3] = [
-            #                 [
-            #                     fix_result[0][0] - bbox_a[0],
-            #                     fix_result[0][1] - bbox_a[1],
-            #                 ],
-            #                 [torch.cuda.is_available()
-            #                     fix_result[1][0] - bbox_a[0],
-            #                     fix_result[1][1] - bbox_a[1],
-            #                 ],
-            #             ]
-            #             to_translate[x][3] = [
-            #                 [
-            #                     fix_result[2][0] - bbox_b[0],
-            #                     fix_result[2][1] - bbox_b[1],
-            #                 ],
-            #                 [
-            #                     fix_result[3][0] - bbox_b[0],
-            #                     fix_result[3][1] - bbox_b[1],
-            #                 ],
-            #             ]
-            # print(
-            #     bbox_a,
-            #     text_bounds_a_local,
-            #     text_bounds_a,
-            #     "\n",
-            #     bbox_b,
-            #     text_bounds_b_local,
-            #     text_bounds_b,
-            # )
-            # debug_image(to_translate[i][1])
-            # debug_image(to_translate[x][1])
-            # cv2.rectangle(
-            #     frame,
-            #     fix_result[0],
-            #     fix_result[1],
-            #     (0, 255, 255),
-            #     1,
-            # )
-            # cv2.rectangle(
-            #     frame,
-            #     fix_result[2],
-            #     fix_result[3],
-            #     (0, 255, 255),
-            #     1,
-            # )
-            # print("intersection found")
-
             # third pass, draw text
-            draw_colors = [(TranslatorGlobals.COLOR_BLACK,TranslatorGlobals.COLOR_BLACK,False) for x in to_translate]
-
-            start = time.time()
-            if self.color_detect_model is not None and len(draw_colors) > 0:
-                with torch.no_grad():  # model needs work
-                    with torch.inference_mode():
-                        with self.frame_process_mutex:  # this may not be needed
-
-                            images = [apply_transforms(frame_with_text.copy()) for _, frame_with_text in to_translate]
-
-                            draw_colors = [((y[0:3] * 255).astype(np.uint8),(y[3:-1] * 255).astype(np.uint8),(True if y[-1] > 0.5 else False)) for y in [
-                                x.cpu().numpy()
-                                for x in self.color_detect_model(
-                                    torch.stack(images).to(
-                                        self.device
-                                    )
-                                )
-                            ]]
-            else:
-                print("Using black since color detect model is 'None'")
-
-            print(f"Color Detection => {time.time() - start} seconds")
+            draw_colors = [
+                (
+                    TranslatorGlobals.COLOR_BLACK,
+                    TranslatorGlobals.COLOR_BLACK,
+                    False,
+                )
+                for _ in to_translate
+            ]
 
             start = time.time()
 
@@ -385,7 +214,6 @@ class FullConversion:
         self,
         images: list[np.ndarray],
     ) -> list[np.ndarray]:
-        # frames = [resize_percent(x, 50) for x in frames]
         total_start = time.time()
         start = time.time()
         to_process = [

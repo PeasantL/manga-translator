@@ -22,11 +22,6 @@ class JapaneseOcr(Ocr):
 
             return [OcrResult(self._post_process(x[0]['generated_text']), "ja") for x in results]
     
-    def _preprocess(self, frame: numpy.ndarray):
-        
-        pixel_values = self.feature_extractor(frame, return_tensors="pt").pixel_values
-        return pixel_values.squeeze()
-    
     def _post_process(self,text: str):
         text = ''.join(text.split())
         text = text.replace('…', '...')

@@ -1,15 +1,9 @@
 import numpy
-from translator.core.plugin import (
-    Ocr,
-    OcrResult,
-    PluginArgument,
-    PluginSelectArgument,
-    PluginSelectArgumentOption,
-)
+from translator.core.plugin import Ocr, OcrResult
 
 
 class NoOcr(Ocr):
-    """Does not perform any ocr on the image"""
+    """Skips OCR. Use it to clean a page without translating it"""
 
     def __init__(self) -> None:
         super().__init__()

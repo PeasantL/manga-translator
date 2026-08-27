@@ -4,7 +4,6 @@ import asyncio
 import os
 import math
 import re
-import numpy as np
 from translator.pipelines import FullConversion
 from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
@@ -86,7 +85,7 @@ def main():
     parser.add_argument(
         "-o",
         "--ocr",
-        default=1,
+        default=0,
         type=int,
         help="R|Set the index of the ocr class to use. must be one of the following\n"
              + convert_to_options_list(get_ocr()),
@@ -105,7 +104,7 @@ def main():
     parser.add_argument(
         "-t",
         "--translator",
-        default=1,
+        default=0,
         type=int,
         help="R|Set the index of the translator class to use. must be one of the following\n"
              + convert_to_options_list(get_translators()),
