@@ -10,7 +10,6 @@ import threading
 import pycountry
 import numpy as np
 import PIL
-import PySimpleGUI as sg
 import asyncio
 import inspect
 import largestinteriorrectangle as lir
@@ -132,21 +131,36 @@ display_image_lock = threading.Lock()
 
 
 def display_image(img: np.ndarray, name: str = "debug"):
+    """Show an image in a debug window, or write it to disk when there is no display.
+
+    PySimpleGUI is imported here rather than at module scope on purpose: it pulls in
+    tkinter, which is absent from most headless installs. Importing it at the top of
+    this module made every entry point unimportable on a server.
+    """
     global display_image_lock
 
     with display_image_lock:
-        # Convert the CV2 image array to a format compatible with PySimpleGUI
-        image_bytes = cv2.imencode(".png", img)[1].tobytes()
+        try:
+            import PySimpleGUI as sg
 
-        # Create the GUI layout
-        layout = [
-            [sg.Text(text=name)],
-            [sg.Image(data=image_bytes)],
-            [sg.Button("Save"), sg.Button("Close")],
-        ]
+            # Convert the CV2 image array to a format compatible with PySimpleGUI
+            image_bytes = cv2.imencode(".png", img)[1].tobytes()
 
-        # Create the window
-        window = sg.Window(name, layout)
+            # Create the GUI layout
+            layout = [
+                [sg.Text(text=name)],
+                [sg.Image(data=image_bytes)],
+                [sg.Button("Save"), sg.Button("Close")],
+            ]
+
+            # Create the window
+            window = sg.Window(name, layout)
+        except Exception as e:
+            # No tkinter, no PySimpleGUI, or no display attached.
+            out_path = os.path.abspath(name + ".png")
+            cv2.imwrite(out_path, img)
+            print(f"Could not open a debug window ({e}), wrote {name} to {out_path}")
+            return
 
         # Event loop to handle events
         while True:
@@ -660,6 +674,18 @@ def get_fonts() -> list[tuple[str, str]]:
 
 def get_model_path(model=""):
     return os.path.join(os.path.abspath("./models"), model)
+
+
+def require_model_file(path: str) -> str:
+    """Check that a model file exists, failing with download instructions if not."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"Missing model weights: {os.path.abspath(path)}\n"
+            "Model files are not checked into the repository. Download them with:\n"
+            "    ./scripts/fetch_models.sh"
+        )
+
+    return path
 
 
 def get_average_font_size(font: ImageFont, text="some text here"):
