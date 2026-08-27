@@ -13,14 +13,19 @@ The page runs through six stages, in `translator/pipelines.py`:
 |---|-------|--------------|
 | 1 | Detection | [YOLOv8](https://github.com/ultralytics/ultralytics) finds speech bubbles and free text |
 | 2 | Segmentation | A second YOLO model masks the text pixels inside them |
-| 3 | Cleaning | [DeepFillV2](https://github.com/nipponjo/deepfillv2-pytorch) or [LaMa](https://github.com/advimman/lama) inpaints the text away |
-| 4 | OCR | Tesseract, EasyOCR or a manga-specific HuggingFace model reads the original |
-| 5 | Translation | DeepL, OpenAI, Gemini, Google Cloud or a HuggingFace model translates it |
+| 3 | Cleaning | [LaMa](https://github.com/advimman/lama) inpaints the text away |
+| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads the original Japanese |
+| 5 | Translation | DeepL or DeepSeek translates it |
 | 6 | Drawing | PIL lays the translation out and draws it into the cleaned bubble |
 
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
 its settings form from those declarations, so adding a backend means writing one
 class and adding one line to the matching `get.py`.
+
+Each stage deliberately carries one good backend rather than a menu. The
+alternatives that used to be here — EasyOCR, Tesseract, DeepFillV2, OpenAI,
+Gemini, Google Cloud, Helsinki-NLP — were either worse on manga specifically,
+broken, or duplicated something that remains.
 
 ## Install
 
@@ -28,16 +33,9 @@ Requires Python 3.10 or newer.
 
 ### 1. System packages
 
-Tesseract is only needed if you want the Tesseract OCR backend:
-
-```bash
-sudo apt update
-sudo apt install tesseract-ocr
-sudo apt install tesseract-ocr-jpn   # Japanese language support
-```
-
-Optional: `sudo apt install python3-tk` enables the debug image viewer. Without
-it, `display_image()` writes a PNG to the working directory instead.
+None are required. Optionally, `sudo apt install python3-tk` enables the debug
+image viewer; without it, `display_image()` writes a PNG to the working
+directory instead.
 
 On Ubuntu, installing
 [Intel oneAPI Threading Building Blocks](https://www.intel.com/content/www/us/en/developer/articles/tool/oneapi-standalone-components.html#onetbb)
@@ -66,17 +64,15 @@ The weights are not in the repository. Download them into `models/`:
 ./scripts/fetch_models.sh
 ```
 
-That fetches the three required models (~373 MB):
+That fetches the two required models (~258 MB):
 
 | File | Size | Used by |
 |------|------|---------|
 | `detection.pt` | 50 MB | Bubble and free-text detection |
 | `segmentation.pt` | 208 MB | Text segmentation |
-| `inpainting.pt` | 115 MB | DeepFillV2 cleaning |
 
-`./scripts/fetch_models.sh --all` also fetches `color_detection.pt` (96 MB),
-which the text colour detection stage would use. That stage is currently
-disabled in `translator/pipelines.py`, so the file is not needed.
+The LaMa cleaner and manga-ocr download their own weights the first time they
+run, so they are not listed here.
 
 ## Usage
 
@@ -113,18 +109,22 @@ cd ui && npm install && npm run build
 
 ### API keys
 
-DeepL, OpenAI, Gemini and Google Cloud each need credentials. The web UI has a
-field for them per backend; `server.py` also reads a `.env` file in the
-repository root:
+Both translation backends need credentials. The web UI has a field for them per
+backend; `server.py` also reads a `.env` file in the repository root:
 
 ```
 DEEPL_AUTH=...
-OPENAI_API_KEY=...
+DEEPSEEK_API_KEY=...
 ```
+
+The `Custom Text` translator writes a fixed string into every bubble and needs
+no key — useful for checking detection, cleaning and drawing on their own.
 
 ## Datasets
 
-Used to train the detection and segmentation models.
+The detection and segmentation models were trained on these. The training
+scripts and dataset converters are not in this repository — see the upstream
+project if you want to retrain.
 
 - [Detection](https://universe.roboflow.com/tarehimself/manga-translator-detection)
 - [Segmentation](https://universe.roboflow.com/tarehimself/manga-translator-segmentation)
@@ -223,14 +223,16 @@ Working:
 - Bubble and free text detection
 - Bubble text extraction, masking and inpainting
 - OCR, translation, hyphenation and text insertion
-- Dataset converters (YOLO, COCO)
 
 Not working yet:
 
-- Text colour detection (written, disabled in `translator/pipelines.py`)
-- Vertical text drawing (`VerticalDrawer` is a stub)
+- Vertical text drawing
 - Free text OCR and translation quality
 - Text resize algorithm — some text comes out too large or too small
+
+Removed rather than fixed: text colour detection (`translator/color_detect/`)
+and the `VerticalDrawer` stub. Both were dead code; the git history has them if
+either is ever picked back up.
 
 ## License
 

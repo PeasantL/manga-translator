@@ -4,10 +4,6 @@ from dotenv import load_dotenv
 load_dotenv()
 import os
 import io
-import urllib.parse
-import requests
-import cv2
-import numpy as np
 import asyncio
 from tornado.web import RequestHandler, Application
 from translator.utils import cv2_to_pil, pil_to_cv2, run_in_thread_decorator
@@ -21,49 +17,8 @@ from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
 from PIL import Image
 import json
-import re
 import webbrowser
 import traceback
-import os
-
-
-def cv2_image_from_url(url: str):
-    if url.startswith("http"):
-        return pil_to_cv2(Image.open(io.BytesIO(requests.get(url).content)))
-    else:
-        sanitized = urllib.parse.unquote(url.split("?")[0])
-        data = cv2.imread(sanitized)
-
-        if data is None:
-            raise BaseException(f"Failed to load image from path {url}")
-        return data
-
-
-REQUEST_SECTION_REGEX = r"id=([0-9]+)(.*)"
-REQUEST_SECTION_PARAMS_REGEX = r"\$([a-z0-9_]+)=([^\/$]+)"
-
-
-def extract_params(data: str) -> tuple[int, dict[str, str]]:
-    selected_id, params_to_parse = re.findall(REQUEST_SECTION_REGEX, data)[0]
-    params = {}
-
-    if len(params_to_parse.strip()) > 0:
-        for param_name, param_value in re.findall(
-            REQUEST_SECTION_PARAMS_REGEX, params_to_parse.strip()
-        ):
-            if len(param_value.strip()) > 0:
-                params[param_name] = param_value
-
-    return int(selected_id), params
-
-
-def send_file_in_chunks(request: RequestHandler, file_path):
-    with open(file_path, "rb") as f:
-        while True:
-            data = f.read(16384)  # or some other nice-sized chunk
-            if not data:
-                break
-            request.write(data)
 
 
 class CleanFromWebHandler(RequestHandler):
@@ -143,7 +98,6 @@ class TranslateFromWebHandler(RequestHandler):
                 ocr=get_ocr()[ocr_id](**ocr_params),
                 drawer=get_drawers()[drawer_id](**drawer_params),
                 cleaner=get_cleaners()[cleaner_id](**cleaner_params),
-                color_detect_model=None,
             )
 
             results = await converter([image_cv2])
@@ -153,35 +107,6 @@ class TranslateFromWebHandler(RequestHandler):
             converted_pil.save(img_byte_arr, format="PNG")
             # Create response given the bytes
             self.write(img_byte_arr.getvalue())
-        except:
-            self.set_header("Content-Type", "text/html")
-            self.set_status(500)
-            self.write(traceback.format_exc())
-            traceback.print_exc()
-
-
-class ImageHandler(RequestHandler):
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Headers", "*")
-        self.set_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-        self.set_header("Content-Type", "image/*")
-
-    @run_in_thread_decorator
-    def get(self):
-        try:
-            full_url = self.request.full_url()
-
-            item_path = "/".join(full_url.split("/")[4:])
-
-            if item_path.startswith("http"):
-                self.write(requests.get(item_path).content)
-            else:
-                item_path = urllib.parse.unquote(item_path)
-                if not os.path.exists(item_path):
-                    self.set_status(404)
-                else:
-                    send_file_in_chunks(self, item_path)
         except:
             self.set_header("Content-Type", "text/html")
             self.set_status(500)
@@ -277,8 +202,6 @@ class MiraTranslateWebHandler(RequestHandler):
 
             if MiraTranslateWebHandler.converter is None:
                 MiraTranslateWebHandler.converter = FullConversion(
-                    color_detect_model=None,
-                    # translator=OpenAiTranslator(api_key=os.getenv("GPT_AUTH")),
                     translator=DeepLTranslator(auth_token=os.getenv("DEEPL_AUTH")),
                     ocr=JapaneseOcr(),
                     translate_free_text=True,
@@ -306,15 +229,6 @@ class MiraTranslateWebHandler(RequestHandler):
             self.write(traceback.format_exc())
 
 
-class UiFilesHandler(RequestHandler):
-    def initialize(self, build_path) -> None:
-        self.build_path = build_path
-
-    @run_in_thread_decorator
-    def get(self, target_file):
-        send_file_in_chunks(self, os.path.join(self.build_path, target_file))
-
-
 class UiHandler(RequestHandler):
     def get(self):
         self.render("index.html")
@@ -333,9 +247,7 @@ async def main():
             (r"/info", BaseHandler),
             (r"/clean", CleanFromWebHandler),
             (r"/translate", TranslateFromWebHandler),
-            # (r"/images/.*", ImageHandler),
             (r"/mira/translate", MiraTranslateWebHandler),
-            # (r"/(.*)", UiFilesHandler, dict(build_path=build_path)),
         ],
         **settings,
     )

@@ -1,11 +1,11 @@
-import numpy as np
 from numpy import ndarray
-import asyncio
 from translator.core.plugin import Cleaner, PluginArgument, PluginTextArgument
 from translator.utils import in_paint_optimized, cv2_to_pil, pil_to_cv2
 
 
 class LamaCleaner(Cleaner):
+    """Inpaints the text away with LaMa"""
+
     def __init__(self, dilation="9") -> None:
         super().__init__()
         from simple_lama_inpainting import SimpleLama
@@ -30,7 +30,7 @@ class LamaCleaner(Cleaner):
         self,
         frame: ndarray,
         mask: ndarray,
-        detection_results: list[tuple[tuple[int, int, int, int], str, float]] = ...,
+        detection_results: list[tuple[tuple[int, int, int, int], str, float]] = [],
     ) -> tuple[ndarray, ndarray]:
         return in_paint_optimized(
             frame=frame,
