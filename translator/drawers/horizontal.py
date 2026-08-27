@@ -1,4 +1,3 @@
-from typing import Any
 import cv2
 import numpy as np
 from PIL import ImageFont, ImageDraw
@@ -11,7 +10,6 @@ from translator.core.plugin import (
     PluginArgument,
     PluginSelectArgument,
     PluginSelectArgumentOption,
-    TranslatorResult,
 )
 from translator.utils import (
     get_best_font_size,
@@ -19,14 +17,11 @@ from translator.utils import (
     pil_to_cv2,
     wrap_text,
     get_fonts,
-    display_image,
-    TranslatorGlobals
 )
-from translator.color_detect.utils import luminance_similarity
 
 
 class HorizontalDrawer(Drawer):
-    """Draws text horizontaly"""
+    """Draws text horizontally"""
 
     def __init__(
         self, font_file="fonts/animeace2_reg.ttf", max_font_size="30", line_spacing="2"
@@ -51,10 +46,6 @@ class HorizontalDrawer(Drawer):
 
         frame_h, frame_w, _ = item.frame.shape
 
-        # fill background incase of segmentation errors
-        # cv2.rectangle(frame, pt1, pt2, (255, 255, 255), -1)
-        # cv2.rectangle(frame, pt1, pt2, (0, 0, 255), 1)
-
         hyphenator = Hyphenator("en_US")
 
         font_size, chars_per_line, line_height, iters = get_best_font_size(
@@ -72,7 +63,6 @@ class HorizontalDrawer(Drawer):
 
         font = ImageFont.truetype(self.font_file, font_size)
 
-        font
         draw_x = 0
         draw_y = 0
 
@@ -85,24 +75,10 @@ class HorizontalDrawer(Drawer):
         image_draw = ImageDraw.Draw(frame_as_pil)
 
         mask_draw = ImageDraw.Draw(mask_as_pil)
-        # color_fg = item.color
-        # avg_frame_color = np.mean(item.frame, axis=(0, 1))
-        # frame_to_text_sim = luminance_similarity(color_fg,avg_frame_color)
-        # color_bg = np.array([255,255,255]).astype(np.uint8)
+        color_fg, color_bg, should_do_bg = item.color
 
-        # if frame_to_text_sim > 0.5:
-        #     stroke_width = 2
-        #     sim_to_white = luminance_similarity(color_fg,TranslatorGlobals.COLOR_WHITE)
-        #     sim_to_black = luminance_similarity(color_fg,TranslatorGlobals.COLOR_BLACK)
-        #     if sim_to_black < sim_to_white:
-        #         color_bg = np.array([0,0,0]).astype(np.uint8)
-
-        color_fg,color_bg,should_do_bg = item.color
-        
         stroke_width = 2 if should_do_bg else 0
 
-        # print("SIMILARITY",luminance_similarity(item.color[0],item.color[1]),item.color)
-        # print("DRAWING",item.translation.text)
         for line_no in range(len(wrapped)):
             line = wrapped[line_no]
             x, y, w, h = font.getbbox(line)

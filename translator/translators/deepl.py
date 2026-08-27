@@ -1,7 +1,5 @@
-import requests
 import traceback
 import asyncio
-import json
 from requests.utils import requote_uri
 import aiohttp
 from translator.core.plugin import (
@@ -14,7 +12,7 @@ from translator.core.plugin import (
 
 
 class DeepLTranslator(Translator):
-    """The Best after GPT but it requires an auth token from here https://www.deepl.com/translator"""
+    """Japanese to English. Needs a free auth token from https://www.deepl.com/translator"""
 
     def __init__(self, auth_token=None) -> None:
         super().__init__()
