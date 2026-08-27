@@ -12,62 +12,74 @@ from translator.core.plugin import (
 )
 
 
-class OpenAiTranslator(Translator):
-    """Uses an Open Ai Model for translation"""
+class DeepSeekTranslator(Translator):
+    """Translates using the DeepSeek API"""
+
+    # DeepSeek serves an OpenAI-compatible API, so the openai client works
+    # against it once the base url is pointed here.
+    BASE_URL = "https://api.deepseek.com"
 
     MODELS = [
-        ("GPT 3.5 Turbo", "gpt-3.5-turbo"),
-        ("GPT 4", "gpt-4"),
-        ("GPT 4 0613", "gpt-4-0613"),
-        ("GPT 3.5 Turbo 16K", "gpt-3.5-turbo-16k"),
-        ("GPT 3.5 Turbo 0613", "gpt-3.5-turbo-0613"),
-        ("GPT 3.5 Turbo 0125", "gpt-3.5-turbo-0125")
+        ("DeepSeek Chat", "deepseek-chat"),
+        ("DeepSeek Reasoner", "deepseek-reasoner"),
     ]
 
     def __init__(
-        self, api_key="", target_lang="en", model=MODELS[5][1], temp="0.2"
+        self, api_key="", target_lang="en", model=MODELS[0][1], temp="1.3"
     ) -> None:
         super().__init__()
-        import openai
-        
-        api_key = os.getenv("OPENAI_API_KEY")
+        from openai import AsyncOpenAI
 
-        if not api_key:
-            raise ValueError("Missing OpenAI API key")
-        
-        openai.api_key = api_key
-        self.openai = openai
+        # The UI sends the key as an argument; fall back to the environment so
+        # a .env file works for the CLI.
+        key = api_key.strip() or os.getenv("DEEPSEEK_API_KEY", "")
+
+        self.client = (
+            AsyncOpenAI(api_key=key, base_url=DeepSeekTranslator.BASE_URL)
+            if key
+            else None
+        )
         self.target_lang = target_lang
         self.model = model
         self.temp = float(temp)
 
     async def translate_one(self, ocr_result: OcrResult):
-        message = f"{ocr_result.language.upper()} to {self.target_lang.upper()}\n{ocr_result.text}"
+        if len(ocr_result.text.strip()) == 0:
+            return TranslatorResult("", self.target_lang)
 
-        result = self.openai.chat.completions.create(
+        message = (
+            f"{ocr_result.language.upper()} to {self.target_lang.upper()}\n"
+            f"{ocr_result.text}"
+        )
+
+        result = await self.client.chat.completions.create(
             model=self.model,
+            temperature=self.temp,
             messages=[
+                {
+                    "role": "system",
+                    "content": "You translate manga dialogue. Reply with the "
+                    "translation only, no commentary and no quotes.",
+                },
                 {"role": "user", "content": "EN to JA\nHello"},
                 {"role": "assistant", "content": "こんにちは"},
                 {"role": "user", "content": message},
             ],
         )
+
         return TranslatorResult(
             result.choices[0].message.content.strip(), self.target_lang
         )
-    
+
     async def translate(self, batch: list[OcrResult]):
-        if len(batch) == 0:
-            return [TranslatorResult(lang_code=self.target_lang) for _ in batch]
-        
+        if self.client is None:
+            return [TranslatorResult("Need DeepSeek api key") for _ in batch]
 
         return await asyncio.gather(*[self.translate_one(x) for x in batch])
 
-        
-
     @staticmethod
     def get_name() -> str:
-        return "Open AI"
+        return "DeepSeek"
 
     @staticmethod
     def get_arguments() -> list[PluginArgument]:
@@ -77,7 +89,9 @@ class OpenAiTranslator(Translator):
 
         return [
             PluginTextArgument(
-                id="api_key", name="API Key", description="Your api Key"
+                id="api_key",
+                name="API Key",
+                description="DeepSeek API key. Falls back to DEEPSEEK_API_KEY",
             ),
             PluginSelectArgument(
                 id="target_lang",
@@ -93,9 +107,15 @@ class OpenAiTranslator(Translator):
                 options=list(
                     map(
                         lambda a: PluginSelectArgumentOption(a[0], a[1]),
-                        OpenAiTranslator.MODELS,
+                        DeepSeekTranslator.MODELS,
                     )
                 ),
-                default=OpenAiTranslator.MODELS[0][1],
+                default=DeepSeekTranslator.MODELS[0][1],
+            ),
+            PluginTextArgument(
+                id="temp",
+                name="Temperature",
+                description="Sampling temperature",
+                default="1.3",
             ),
         ]
