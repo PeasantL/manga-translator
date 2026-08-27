@@ -29,13 +29,14 @@ class OpenAiTranslator(Translator):
     ) -> None:
         super().__init__()
         import openai
-        
-        api_key = os.getenv("OPENAI_API_KEY")
 
-        if not api_key:
-            raise ValueError("Missing OpenAI API key")
-        
-        openai.api_key = api_key
+        # Prefer the key the caller supplied (the UI collects one per backend,
+        # the CLI takes one via --translator-args) and fall back to the
+        # environment. This used to unconditionally overwrite the argument with
+        # os.getenv, so a key passed in was discarded.
+        self.api_key = api_key.strip() or os.getenv("OPENAI_API_KEY", "")
+
+        openai.api_key = self.api_key
         self.openai = openai
         self.target_lang = target_lang
         self.model = model
@@ -57,13 +58,10 @@ class OpenAiTranslator(Translator):
         )
     
     async def translate(self, batch: list[OcrResult]):
-        if len(batch) == 0:
-            return [TranslatorResult(lang_code=self.target_lang) for _ in batch]
-        
+        if len(self.api_key.strip()) == 0:
+            return [TranslatorResult("Need OpenAI api key") for _ in batch]
 
         return await asyncio.gather(*[self.translate_one(x) for x in batch])
-
-        
 
     @staticmethod
     def get_name() -> str:

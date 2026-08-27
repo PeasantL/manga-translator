@@ -1,7 +1,4 @@
 from typing import Union
-from dotenv import load_dotenv
-
-load_dotenv()
 import os
 import io
 import urllib.parse
