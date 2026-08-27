@@ -75,8 +75,8 @@ That fetches the three required models (~373 MB):
 | `inpainting.pt` | 115 MB | DeepFillV2 cleaning |
 
 `./scripts/fetch_models.sh --all` also fetches `color_detection.pt` (96 MB),
-which the text colour detection stage would use. That stage is currently
-disabled in `translator/pipelines.py`, so the file is not needed.
+used by the optional text colour detection stage. That stage is off by default
+(see below), so the file is not needed for a normal run.
 
 ## Usage
 
@@ -225,9 +225,16 @@ Working:
 - OCR, translation, hyphenation and text insertion
 - Dataset converters (YOLO, COCO)
 
+Opt-in, off by default:
+
+- Text colour detection. Enable with `python3 main.py --color-detect ...`, or by
+  passing `color_detect_model` to `FullConversion`. It predicts the original
+  text and outline colour instead of always drawing black, but its accuracy is
+  not yet good enough to be the default — on a pure black source it tends to
+  come back off-black.
+
 Not working yet:
 
-- Text colour detection (written, disabled in `translator/pipelines.py`)
 - Vertical text drawing (`VerticalDrawer` is a stub)
 - Free text OCR and translation quality
 - Text resize algorithm — some text comes out too large or too small

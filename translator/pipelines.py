@@ -52,7 +52,10 @@ class FullConversion:
         self,
         detect_model: str = get_model_path("detection.pt"),
         seg_model: str = get_model_path("segmentation.pt"),
-        color_detect_model: Union[str, None] = get_model_path("color_detection.pt"), # Performance is not where I would like it to be at,
+        # Off by default: the model works but its accuracy is not good enough to
+        # beat simply drawing black. Pass a path to models/color_detection.pt to
+        # turn it on, or use main.py --color-detect.
+        color_detect_model: Union[str, None] = None,
         translator: Translator = Translator(),
         ocr: Ocr = Ocr(),
         drawer: Drawer = HorizontalDrawer(),
@@ -68,21 +71,13 @@ class FullConversion:
         self.segmentation_model = YOLO(require_model_file(seg_model))
         self.detection_model = YOLO(require_model_file(detect_model))
 
-        #issues with color_detect model
         self.color_detect_model = None
-        """
-        try:
-            if color_detect_model is not None:
-                self.color_detect_model = get_color_detection_model(
-                    weights_path=color_detect_model, device=self.device
-                )
-                self.color_detect_model.eval()
-            else:
-                self.color_detect_model = None
-        except:
-            self.color_detect_model = None
-            traceback.print_exc()
-        """
+        if color_detect_model is not None:
+            self.color_detect_model = get_color_detection_model(
+                weights_path=require_model_file(color_detect_model),
+                device=self.device,
+            )
+            self.color_detect_model.eval()
 
         self.translate_free_text = translate_free_text
         self.translator = translator
@@ -334,10 +329,7 @@ class FullConversion:
                                     )
                                 )
                             ]]
-            else:
-                print("Using black since color detect model is 'None'")
-
-            print(f"Color Detection => {time.time() - start} seconds")
+                print(f"Color Detection => {time.time() - start} seconds")
 
             start = time.time()
 

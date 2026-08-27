@@ -9,6 +9,7 @@ from translator.pipelines import FullConversion
 from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
+from translator.utils import get_model_path
 
 EXTENSION_REGEX = r".*\.([a-zA-Z0-9]+)"
 
@@ -43,11 +44,12 @@ def json_to_args(args_str: str):
     return args
 
 
-async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str):
+async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str, color_detect: bool = False):
     converter = FullConversion(
         translator=get_translators()[translator](**json_to_args(translator_args)),
         ocr=get_ocr()[ocr](**json_to_args(ocr_args)),
         drawer=get_drawers()[drawer](**json_to_args(drawer_args)),
+        color_detect_model=get_model_path("color_detection.pt") if color_detect else None,
     )
     
     filenames = files
@@ -140,6 +142,15 @@ def main():
         required=False,
     )
 
+    parser.add_argument(
+        "-cd",
+        "--color-detect",
+        action="store_true",
+        help="Detect the original text colour instead of drawing black. Needs "
+             "models/color_detection.pt (./scripts/fetch_models.sh --all).",
+        required=False,
+    )
+
     args = parser.parse_args()
 
     if args.files is None:
@@ -155,6 +166,7 @@ def main():
                 args.ocr_args,
                 args.drawer,
                 args.drawer_args,
+                args.color_detect,
             ))
         else:
             asyncio.run(do_convert(
@@ -165,6 +177,7 @@ def main():
                 args.ocr_args,
                 args.drawer,
                 args.drawer_args,
+                args.color_detect,
             ))
 
 
