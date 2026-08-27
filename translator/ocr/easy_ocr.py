@@ -108,8 +108,12 @@ class EasyOcr(Ocr):
     async def do_ocr(self, batch: list[numpy.ndarray]):
         result = []
         for x in batch:
-            read_text_result = self.easy.readtext(x, detail=0, paragraph=True)
-            text = read_text_result[0] if read_text_result else ''
+            # readtext(paragraph=True) groups the detected words into paragraphs
+            # and returns a list of them. Taking [0] dropped everything after
+            # the first group, so any bubble easyocr split in two lost half its
+            # text with no warning.
+            paragraphs = self.easy.readtext(x, detail=0, paragraph=True)
+            text = " ".join(paragraphs)
             result.append(OcrResult(text=text, language=self.language))
         return result
 
