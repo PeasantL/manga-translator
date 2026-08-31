@@ -74,7 +74,7 @@ class DeepSeekTranslator(Translator):
         temp="1.3",
         max_lines="200",
         stream="true",
-        reasoning_effort="high",
+        reasoning_effort="low",
         max_tokens="8192",
     ) -> None:
         super().__init__()
@@ -355,12 +355,14 @@ class DeepSeekTranslator(Translator):
             PluginSelectArgument(
                 id="reasoning_effort",
                 name="Reasoning Effort",
-                description="How much thinking the model does before answering",
+                description="How much thinking the model does before answering. "
+                "Reasoning counts towards max_tokens, so raising this may need "
+                "max_tokens raised with it",
                 options=[
                     PluginSelectArgumentOption(e.capitalize(), e)
                     for e in DeepSeekTranslator.REASONING_EFFORTS
                 ],
-                default="high",
+                default="low",
             ),
             PluginTextArgument(
                 id="max_tokens",
