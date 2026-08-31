@@ -147,84 +147,14 @@ project if you want to retrain.
 
 ## Examples
 
-Originals are in `examples/raw`, results in `examples/raw_converted`.
+`examples/raw` holds six sample pages. Convert them with:
 
-<table>
-   <thead>
-      <tr>
-         <th align="center" width="50%">Original</th>
-         <th align="center" width="50%">Translated</th>
-      </tr>
-   </thead>
-   <tbody>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/jujutsu_kaisen.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/jujutsu_kaisen_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>Jujutsu Kaisen</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/solo_leveling.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/solo_leveling_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => "Meow"</br>Solo Leveling</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/the_rising_of_the_sheild_hero.jpg" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/the_rising_of_the_sheild_hero_converted.jpg" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => Clean</br>The Rising of the Shield Hero</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_a_certain_scientific_accelerator.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_a_certain_scientific_accelerator_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>A Certain Scientific Accelerator</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_one_punch_man.jpg" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_one_punch_man_converted.jpg" width="100%" />
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>One Punch Man</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_oshi_no_ko.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_oshi_no_ko_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>Oshi No Ko</td>
-      </tr>
-   </tbody>
-</table>
+```bash
+python3 main.py -f examples/raw
+```
+
+The converted pages are written to `output/`. They are not checked in, since
+the result depends on which model and target language you translate with.
 
 ## Glossary
 
