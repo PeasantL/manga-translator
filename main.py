@@ -11,9 +11,7 @@ from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
-from translator.utils import natural_sort_key
-
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+from translator.chapter import find_chapters
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -54,35 +52,6 @@ def json_to_args(args_str: str):
     return args
 
 
-def collect_image_files(paths: list[str]) -> list[str]:
-    """Expand a folder argument into the image files inside it.
-
-    A folder holding a README or a subdirectory used to take the whole run down,
-    because the non-image entries reached cv2.imread as None.
-    """
-    if len(paths) == 1 and os.path.isdir(paths[0]):
-        folder = paths[0]
-        # Natural order, so that page2 comes before page10. A folder is treated as
-        # one chapter and this is the order its dialogue is read in.
-        candidates = [
-            os.path.join(folder, x)
-            for x in sorted(os.listdir(folder), key=natural_sort_key)
-        ]
-    else:
-        candidates = paths
-
-    files = []
-    for path in candidates:
-        if not os.path.isfile(path):
-            print(f"Skipping {path}, not a file")
-        elif os.path.splitext(path)[1].lower() not in IMAGE_EXTENSIONS:
-            print(f"Skipping {path}, not a supported image type")
-        else:
-            files.append(path)
-
-    return files
-
-
 def select_plugin(options: list, index: int, kind: str):
     if index < 0 or index >= len(options):
         raise SystemExit(
@@ -91,7 +60,7 @@ def select_plugin(options: list, index: int, kind: str):
     return options[index]
 
 
-async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str, cleaner: int, cleaner_args: str):
+async def do_convert(chapters: list, translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str, cleaner: int, cleaner_args: str):
     converter = FullConversion(
         translator=select_plugin(get_translators(), translator, "translator")(**json_to_args(translator_args)),
         ocr=select_plugin(get_ocr(), ocr, "ocr")(**json_to_args(ocr_args)),
@@ -99,36 +68,45 @@ async def do_convert(files: list[str], translator: int, translator_args: str, oc
         cleaner=select_plugin(get_cleaners(), cleaner, "cleaner")(**json_to_args(cleaner_args)),
     )
 
-    output_dir = 'output'  # Define the output directory
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)  # Create the directory if it doesn't exist
+    for chapter in chapters:
+        await convert_chapter(chapter, converter)
 
-    # The whole set is handed over at once. A folder is one chapter, and the
-    # translator is given its dialogue as a single ordered list so it can use the
-    # surrounding lines for context. FullConversion still chunks the models it
-    # runs page by page.
+
+def load_pages(chapter) -> list[tuple[str, "object"]]:
+    """Read a chapter's pages, dropping any the decoder cannot handle."""
     loaded = []
-    for file in files:
-        frame = cv2.imread(file)
+
+    for path in chapter.pages:
+        frame = cv2.imread(path)
+
         if frame is None:
-            print(f"Skipping {file}, could not be read as an image")
+            print(f"Skipping {path}, could not be read as an image")
         else:
-            loaded.append((file, frame))
+            loaded.append((path, frame))
+
+    return loaded
+
+
+async def convert_chapter(chapter, converter: FullConversion):
+    loaded = load_pages(chapter)
 
     if len(loaded) == 0:
-        print("No images to convert")
+        print(f"{chapter.name}: nothing to convert")
         return
 
-    print(f"Converting {len(loaded)} pages as one chapter")
+    os.makedirs(chapter.output_dir, exist_ok=True)
 
-    for filename, frame in zip(
-            [x[0] for x in loaded], await converter([x[1] for x in loaded])
-    ):
-        base, ext = os.path.splitext(os.path.basename(filename))
-        new_filename = os.path.join(output_dir, base + "_converted" + (ext if ext else ".png"))
-        cv2.imwrite(new_filename, frame)
+    # The whole chapter is handed over at once, so the translator is given its
+    # dialogue as a single ordered list and can use the surrounding lines for
+    # context. FullConversion still chunks the models it runs page by page.
+    print(f"{chapter.name}: converting {len(loaded)} pages as one chapter")
 
-    print(f"Wrote {len(loaded)} pages to {output_dir}/")
+    results = await converter([frame for _, frame in loaded])
+
+    for (path, _), frame in zip(loaded, results):
+        cv2.imwrite(os.path.join(chapter.output_dir, os.path.basename(path)), frame)
+
+    print(f"{chapter.name}: wrote {len(loaded)} pages to {chapter.output_dir}/")
 
 
 def main():
@@ -143,7 +121,7 @@ def main():
         "-f",
         "--files",
         nargs="+",
-        help="A list of images to convert or path to a folder of images",
+        help="Path to a folder of chapter folders, or a list of images",
     )
 
     parser.add_argument(
@@ -228,14 +206,16 @@ def main():
         parser.print_help()
         return
 
-    files = collect_image_files(args.files)
+    chapters = find_chapters(args.files)
 
-    if len(files) == 0:
-        print("No images to convert")
+    if len(chapters) == 0:
+        print("No chapters to convert")
         return
 
+    print(f"Found {len(chapters)} chapter(s): {', '.join(c.name for c in chapters)}")
+
     asyncio.run(do_convert(
-        files,
+        chapters,
         args.translator,
         args.translator_args,
         args.ocr,
