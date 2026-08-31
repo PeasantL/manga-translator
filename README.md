@@ -7,16 +7,27 @@ Forked from [TareHimself/manga-translator](https://github.com/TareHimself/manga-
 
 ## How it works
 
-The page runs through six stages, in `translator/pipelines.py`:
+A folder is treated as one chapter. It runs through six stages, in
+`translator/pipelines.py`:
 
 | # | Stage | What it does |
 |---|-------|--------------|
 | 1 | Detection | [YOLOv8](https://github.com/ultralytics/ultralytics) finds speech bubbles and free text |
 | 2 | Segmentation | A second YOLO model masks the text pixels inside them |
 | 3 | Cleaning | [LaMa](https://github.com/advimman/lama) inpaints the text away |
-| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads the original Japanese |
-| 5 | Translation | DeepSeek translates it |
+| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads every bubble in the chapter, in reading order |
+| 5 | Translation | DeepSeek translates that whole list in one request |
 | 6 | Drawing | PIL lays the translation out and draws it into the cleaned bubble |
+
+Stages 1 to 3 and stage 6 run per page. Stages 4 and 5 run once for the whole
+chapter: every page is detected and cleaned first, then the chapter's dialogue is
+read and translated as a single ordered list, and only then is anything drawn.
+Translating a bubble on its own gives the model no idea who is speaking or what
+was just said, so lines are ordered the way the page is read — rows top to
+bottom, right to left within a row — and sent together.
+
+Chapters longer than the translator's `max_lines` (200 by default) are split
+across requests, with the previous lines carried over as context.
 
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
 its settings form from those declarations, so adding a backend means writing one
@@ -81,9 +92,13 @@ Commands are run from the repository root.
 ### CLI
 
 ```bash
-python3 main.py -f image1.png image2.png   # a list of images
-python3 main.py -f ./input                 # or a folder
+python3 main.py -f ./input                 # a folder, treated as one chapter
+python3 main.py -f image1.png image2.png   # or a list of images
 ```
+
+A folder's pages are sorted naturally, so `page2` comes before `page10`. An
+explicit list of files is used in the order given. Either way the whole set is
+translated together, so pass a chapter at a time rather than a page at a time.
 
 Results are written to `output/`. `python3 main.py --help` lists the available
 OCR, translator, drawer and cleaner backends with their index numbers, which is
