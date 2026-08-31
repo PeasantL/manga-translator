@@ -9,7 +9,7 @@ from tornado.web import RequestHandler, Application
 from translator.utils import cv2_to_pil, pil_to_cv2, run_in_thread_decorator
 from translator.pipelines import FullConversion
 from translator.translators.get import get_translators
-from translator.translators.deepl import DeepLTranslator
+from translator.translators.deepseek import DeepSeekTranslator
 from translator.ocr.get import get_ocr
 from translator.ocr.no import NoOcr
 from translator.ocr.huggingface_ja import JapaneseOcr
@@ -202,7 +202,7 @@ class MiraTranslateWebHandler(RequestHandler):
 
             if MiraTranslateWebHandler.converter is None:
                 MiraTranslateWebHandler.converter = FullConversion(
-                    translator=DeepLTranslator(auth_token=os.getenv("DEEPL_AUTH")),
+                    translator=DeepSeekTranslator(),
                     ocr=JapaneseOcr(),
                     translate_free_text=True,
                 )
