@@ -100,7 +100,10 @@ async def stage_ocr(chapter: Chapter, args):
 
     print(f"{chapter.name}: reading {len(loaded)} pages")
 
-    pages, ocr_results = await converter.clean_and_read([frame for _, frame in loaded])
+    pages, ocr_results = await converter.clean_and_read(
+        [frame for _, frame in loaded],
+        names=[os.path.basename(path) for path, _ in loaded],
+    )
 
     os.makedirs(chapter.clean_dir, exist_ok=True)
 

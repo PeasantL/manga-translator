@@ -196,13 +196,9 @@ class FullConversion:
                     text_mask, (x1, y1), (x2, y2), (255, 255, 255), -1
                 )
 
-        start = time.time()
-
         frame_clean, text_mask = await self.cleaner(
             frame=frame, mask=text_mask, detection_results=detect_result
         )  # segmentation_results.boxes.xyxy.cpu().numpy()
-
-        print(f"Inpainting => {time.time() - start} seconds")
 
         return frame, frame_clean, text_mask, detect_result
 
@@ -308,6 +304,7 @@ class FullConversion:
         images: list[np.ndarray],
         detect_batch_size: int = 4,
         ocr_batch_size: int = 32,
+        names: list[str] = None,
     ) -> tuple[list["PageLayout"], list[OcrResult]]:
         """Stages 1 to 4 for a chapter: detect, segment, clean, and read.
 
@@ -320,24 +317,41 @@ class FullConversion:
         """
         pages: list[PageLayout] = []
 
-        for i in range(0, len(images), detect_batch_size):
-            chunk = images[i:i + detect_batch_size]
+        total = len(images)
+        labels = names if names is not None else [f"page {i + 1}" for i in range(total)]
+        finished = 0
+        start = time.time()
 
-            start = time.time()
+        async def prepare_one(detect_result, seg_result, frame, label):
+            # Pages within a chunk are prepared concurrently, so the count is
+            # incremented as each one lands rather than in index order.
+            nonlocal finished
+
+            page = await self.prepare_frame(
+                detect_result=detect_result, seg_result=seg_result, input_frame=frame
+            )
+
+            finished += 1
+            print(
+                f"  [{finished}/{total}] cleaned {label}, "
+                f"{len(page.draw_boxes)} regions"
+            )
+
+            return page
+
+        for i in range(0, total, detect_batch_size):
+            chunk = images[i:i + detect_batch_size]
+            chunk_labels = labels[i:i + detect_batch_size]
+
             detections = self.detection_model(chunk, device=self.yolo_device, verbose=False)
             segmentations = self.segmentation_model(chunk, device=self.yolo_device, verbose=False)
-            print(f"Yolov8 Models => {time.time() - start} seconds")
 
             pages.extend(
                 await asyncio.gather(
                     *[
-                        self.prepare_frame(
-                            detect_result=detect_result,
-                            seg_result=seg_result,
-                            input_frame=frame,
-                        )
-                        for detect_result, seg_result, frame in zip(
-                            detections, segmentations, chunk
+                        prepare_one(detect_result, seg_result, frame, label)
+                        for detect_result, seg_result, frame, label in zip(
+                            detections, segmentations, chunk, chunk_labels
                         )
                     ]
                 )
@@ -345,15 +359,21 @@ class FullConversion:
 
         text_crops = [crop for page in pages for crop in page.text_crops]
 
-        print(f"Found {len(text_crops)} text regions across {len(pages)} pages")
+        print(
+            f"  cleaned {total} pages in {time.time() - start:.1f}s, "
+            f"{len(text_crops)} text regions found"
+        )
 
         ocr_results: list[OcrResult] = []
 
         if self.ocr and len(text_crops) > 0:
             start = time.time()
+
             for i in range(0, len(text_crops), ocr_batch_size):
                 ocr_results.extend(await self.ocr(text_crops[i:i + ocr_batch_size]))
-            print(f"Ocr => {time.time() - start} seconds")
+                print(f"  [{len(ocr_results)}/{len(text_crops)}] regions read")
+
+            print(f"  read {len(text_crops)} regions in {time.time() - start:.1f}s")
 
         return pages, ocr_results
 
@@ -368,7 +388,7 @@ class FullConversion:
 
         start = time.time()
         translations = list(await self.translator(ocr_results))
-        print(f"Translation => {time.time() - start} seconds")
+        print(f"  translated {len(ocr_results)} regions in {time.time() - start:.1f}s")
 
         return align_translations(translations, len(ocr_results))
 
@@ -393,7 +413,7 @@ class FullConversion:
 
             offset += count
 
-        print(f"Drawing => {time.time() - start} seconds")
+        print(f"  drew {len(results)} pages in {time.time() - start:.1f}s")
 
         return results
 
@@ -412,6 +432,6 @@ class FullConversion:
         translations = await self.translate_regions(ocr_results)
         results = await self.render_pages(pages, translations)
 
-        print(f"Total Process => {time.time() - total_start} seconds")
+        print(f"  done in {time.time() - total_start:.1f}s")
 
         return results
