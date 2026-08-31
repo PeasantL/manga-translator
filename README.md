@@ -45,10 +45,13 @@ cleaning or OCR model at all, so re-running them costs seconds rather than
 minutes — and `ocr` needs no API key.
 
 `ocr.json` holds, for every region, the box it will be drawn into, the text read
-out of it, and its language. `translated.json` is the same document with a
-translation filled in per region. Because the box travels with the text, the
-draw stage never has to detect anything again. Both are ordinary JSON: correct a
-translation by hand, re-run `-s draw`, and only the drawing happens again.
+out of it, its language, and the colour of the lettering and of what the
+lettering sat on. `translated.json` is the same document with a translation
+filled in per region. Because all of that travels with the text, the draw stage
+never has to detect anything or look at the original page again - a white on
+black bubble is lettered white because that is what was measured off it, not
+because anything guessed. Both are ordinary JSON: correct a translation by hand,
+re-run `-s draw`, and only the drawing happens again.
 
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
 its settings form from those declarations, so adding a backend means writing one

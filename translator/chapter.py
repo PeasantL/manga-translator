@@ -130,6 +130,8 @@ class Region:
 
     `box` is the area the translation is drawn into, in the page's pixel
     coordinates, which is all stage 6 needs to place text without redetecting.
+    The colours are measured while the original text is still on the page, so
+    that stage 6 can letter a white on black bubble without looking at the art.
     """
 
     def __init__(
@@ -138,11 +140,20 @@ class Region:
         text: str = "",
         language: str = "",
         translation: str = "",
+        text_color: list[int] = None,
+        background_color: list[int] = None,
     ) -> None:
         self.box = [int(v) for v in box]
         self.text = text
         self.language = language
         self.translation = translation
+        # Both BGR, like everything else that came out of OpenCV, and both
+        # measured off the page while the text was still there. null means the
+        # cleaner found no glyphs to measure.
+        self.text_color = list(text_color) if text_color is not None else None
+        self.background_color = (
+            list(background_color) if background_color is not None else None
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +161,8 @@ class Region:
             "text": self.text,
             "language": self.language,
             "translation": self.translation,
+            "text_color": self.text_color,
+            "background_color": self.background_color,
         }
 
     @classmethod
@@ -159,6 +172,8 @@ class Region:
             text=data.get("text", ""),
             language=data.get("language", ""),
             translation=data.get("translation", ""),
+            text_color=data.get("text_color"),
+            background_color=data.get("background_color"),
         )
 
 
@@ -212,7 +227,7 @@ class ChapterDocument:
     the translator needs to make sense of it.
     """
 
-    SCHEMA = 1
+    SCHEMA = 2
 
     def __init__(
         self,

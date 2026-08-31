@@ -137,9 +137,10 @@ class HorizontalDrawer(Drawer):
         stroke_color = color_bg
 
         # Text that outgrew its bubble is over whatever the bubble was sitting
-        # on. Over line art a white outline is enough to read it against, and it
-        # leaves the drawing intact; over something solid - a black panel, a
-        # screentone - nothing shows through it, so it gets a panel of its own.
+        # on. Over line art an outline in the bubble's own colour is enough to
+        # read it against, and it leaves the drawing intact; over something
+        # solid - a black panel, a screentone - nothing shows through it, so it
+        # gets a panel of its own.
         busy = False
 
         if item.backdrop:
@@ -147,8 +148,7 @@ class HorizontalDrawer(Drawer):
             busy = darkness >= 0.25
 
             if not busy:
-                stroke_width = max(2, round(font_size / 6))
-                stroke_color = np.array((255, 255, 255))
+                stroke_width = max(stroke_width, max(2, round(font_size / 6)))
 
         # A line is usually one run in the chosen font. It is split only where
         # that font has no glyph, so a symbol it lacks is drawn from a font that
@@ -179,8 +179,10 @@ class HorizontalDrawer(Drawer):
                 min(frame_h, block_top + block_height + padding),
             )
 
+            # The panel is the bubble's own background, so white on black
+            # lettering stays white on black once it leaves the bubble.
             image_draw.rounded_rectangle(
-                panel, radius=padding, fill=(255, 255, 255, 255)
+                panel, radius=padding, fill=(*color_bg, 255)
             )
             mask_draw.rounded_rectangle(
                 panel, radius=padding, fill=(255, 255, 255, 255)
