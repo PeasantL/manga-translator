@@ -1,15 +1,18 @@
+from dotenv import load_dotenv
+
+load_dotenv()
 import argparse
+import ast
 import cv2
 import asyncio
 import os
-import math
-import re
-from translator.pipelines import FullConversion
+from translator.pipelines import FullConversion, draw_page, align_translations
 from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
-
-EXTENSION_REGEX = r".*\.([a-zA-Z0-9]+)"
+from translator.cleaners.get import get_cleaners
+from translator.chapter import find_chapters, Chapter, ChapterDocument, Page, Region, CLEAN_DIR
+from translator.core.plugin import OcrResult, TranslatorResult
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -37,34 +40,210 @@ def json_to_args(args_str: str):
         a = item.strip()
         equ_idx = a.index("=")
         key = a[0:equ_idx]
-        value = eval(a[equ_idx + 1:])
+        raw = a[equ_idx + 1:].strip()
+        try:
+            # Lets 'size=12' and "text='hi'" both work, without eval's ability to
+            # run arbitrary code from the command line.
+            value = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            # Anything that is not a Python literal is taken as a plain string,
+            # which is what 'key=value' looks like to everyone but Python.
+            value = raw
         args[key] = value
     return args
 
 
-async def do_convert(files: list[str], translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str):
+def select_plugin(options: list, index: int, kind: str):
+    if index < 0 or index >= len(options):
+        raise SystemExit(
+            f"Invalid {kind} index {index}, must be between 0 and {len(options) - 1}"
+        )
+    return options[index]
+
+
+STAGES = ["all", "ocr", "translate", "draw"]
+
+
+def load_pages(chapter: Chapter) -> list[tuple[str, "object"]]:
+    """Read a chapter's pages, dropping any the decoder cannot handle."""
+    loaded = []
+
+    for path in chapter.pages:
+        frame = cv2.imread(path)
+
+        if frame is None:
+            print(f"Skipping {path}, could not be read as an image")
+        else:
+            loaded.append((path, frame))
+
+    return loaded
+
+
+async def stage_ocr(chapter: Chapter, args):
+    """Steps 1 to 4: detect, segment, clean, read.
+
+    Writes the cleaned pages and ocr.json. No translator is built, so this stage
+    needs no API key.
+    """
+    loaded = load_pages(chapter)
+
+    if len(loaded) == 0:
+        print(f"{chapter.name}: no readable pages")
+        return
+
     converter = FullConversion(
-        translator=get_translators()[translator](**json_to_args(translator_args)),
-        ocr=get_ocr()[ocr](**json_to_args(ocr_args)),
-        drawer=get_drawers()[drawer](**json_to_args(drawer_args)),
+        ocr=select_plugin(get_ocr(), args.ocr, "ocr")(**json_to_args(args.ocr_args)),
+        cleaner=select_plugin(get_cleaners(), args.cleaner, "cleaner")(
+            **json_to_args(args.cleaner_args)
+        ),
     )
-    
-    filenames = files
-    batches = math.ceil(len(filenames) / 4)
-    output_dir = 'output'  # Define the output directory
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)  # Create the directory if it doesn't exist
-    
-    for i in range(batches):
-        files_to_convert = filenames[i * 4: (i + 1) * 4]
-        for filename, data in zip(
-                files_to_convert, await converter([cv2.imread(file) for file in files_to_convert])
-        ):
-            frame = data
-            ext = re.findall(EXTENSION_REGEX, filename)[0]
-            new_filename = os.path.join(output_dir, os.path.basename(filename[0: len(filename) - (len(ext) + 1)]) + "_converted." + ext)
-            cv2.imwrite(new_filename, frame)
-        print(f"Converted Batch {i + 1}/{batches}")
+
+    print(f"{chapter.name}: reading {len(loaded)} pages")
+
+    pages, ocr_results = await converter.clean_and_read(
+        [frame for _, frame in loaded],
+        names=[os.path.basename(path) for path, _ in loaded],
+    )
+
+    os.makedirs(chapter.clean_dir, exist_ok=True)
+
+    document = ChapterDocument(chapter=chapter.name)
+    position = 0
+
+    for (path, _), page in zip(loaded, pages):
+        name = os.path.basename(path)
+        # Always PNG, whatever the source was. The cleaned page is an
+        # intermediate that gets read back and drawn on, so it must not lose
+        # anything to JPEG on the way through.
+        clean_name = os.path.splitext(name)[0] + ".png"
+        clean_relative = f"{CLEAN_DIR}/{clean_name}"
+
+        cv2.imwrite(os.path.join(chapter.output_dir, CLEAN_DIR, clean_name), page.frame)
+
+        regions = []
+        for box in page.draw_boxes:
+            result = ocr_results[position] if position < len(ocr_results) else OcrResult()
+            position += 1
+            regions.append(
+                Region(box=list(box), text=result.text, language=result.language)
+            )
+
+        height, width = page.frame.shape[:2]
+        document.pages.append(
+            Page(
+                name=name,
+                source=path.replace("\\", "/"),
+                clean=clean_relative,
+                width=width,
+                height=height,
+                regions=regions,
+            )
+        )
+
+    languages = [r.language for r in document.regions() if r.language]
+    document.source_language = languages[0] if languages else ""
+    document.save(chapter.ocr_path)
+
+    print(
+        f"{chapter.name}: wrote {len(document.regions())} regions to "
+        f"{chapter.ocr_path} and cleaned pages to {chapter.clean_dir}/"
+    )
+
+
+async def stage_translate(chapter: Chapter, args):
+    """Step 5: translate ocr.json into translated.json.
+
+    Reads and writes JSON only. No detection, cleaning or OCR model is loaded.
+    """
+    document = ChapterDocument.load(chapter.ocr_path)
+    regions = document.regions()
+
+    if len(regions) == 0:
+        print(f"{chapter.name}: no regions to translate")
+        document.save(chapter.translated_path)
+        return
+
+    translator = select_plugin(get_translators(), args.translator, "translator")(
+        **json_to_args(args.translator_args)
+    )
+
+    print(f"{chapter.name}: translating {len(regions)} regions as one chapter")
+
+    translations = align_translations(
+        list(await translator([OcrResult(r.text, r.language) for r in regions])),
+        len(regions),
+    )
+
+    for region, translation in zip(regions, translations):
+        region.translation = translation.text
+
+    document.target_language = getattr(translator, "target_lang", "")
+    document.save(chapter.translated_path)
+
+    print(f"{chapter.name}: wrote {chapter.translated_path}")
+
+
+async def stage_draw(chapter: Chapter, args):
+    """Step 6: draw translated.json onto the cleaned pages.
+
+    Reads the cleaned pages and the JSON, so no vision or language model is
+    loaded here either.
+    """
+    document = ChapterDocument.load(chapter.translated_path)
+
+    drawer = select_plugin(get_drawers(), args.drawer, "drawer")(
+        **json_to_args(args.drawer_args)
+    )
+
+    written = 0
+
+    for page in document.pages:
+        clean_path = os.path.join(chapter.output_dir, page.clean)
+        frame = cv2.imread(clean_path)
+
+        if frame is None:
+            print(f"{chapter.name}: missing cleaned page {clean_path}, skipping")
+            continue
+
+        drawn = await draw_page(
+            frame,
+            [tuple(r.box) for r in page.regions],
+            [
+                TranslatorResult(r.translation, document.target_language)
+                for r in page.regions
+            ],
+            drawer,
+        )
+
+        cv2.imwrite(os.path.join(chapter.output_dir, page.name), drawn)
+        written += 1
+
+    print(f"{chapter.name}: wrote {written} pages to {chapter.output_dir}/")
+
+
+async def do_convert(chapters: list, args):
+    """Run the requested stage over every chapter.
+
+    "all" runs the three stages in sequence rather than keeping the chapter in
+    memory, so that a full run leaves behind exactly the same artifacts a staged
+    run does, and the two paths cannot drift apart.
+    """
+    stages = STAGES[1:] if args.stage == "all" else [args.stage]
+
+    for chapter in chapters:
+        os.makedirs(chapter.output_dir, exist_ok=True)
+
+        for stage in stages:
+            try:
+                if stage == "ocr":
+                    await stage_ocr(chapter, args)
+                elif stage == "translate":
+                    await stage_translate(chapter, args)
+                else:
+                    await stage_draw(chapter, args)
+            except FileNotFoundError as missing:
+                print(f"{chapter.name}: {missing}")
+                break
 
 
 def main():
@@ -79,7 +258,20 @@ def main():
         "-f",
         "--files",
         nargs="+",
-        help="A list of images to convert or path to a folder of images",
+        help="Path to a folder of chapter folders, or a list of images",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--stage",
+        default="all",
+        choices=STAGES,
+        help="R|Which part of the pipeline to run\n"
+             "all) every stage, in order\n"
+             "ocr) steps 1-4, writes the cleaned pages and ocr.json\n"
+             "translate) step 5, writes translated.json from ocr.json\n"
+             "draw) step 6, draws translated.json onto the cleaned pages",
+        required=False,
     )
 
     parser.add_argument(
@@ -139,32 +331,40 @@ def main():
         required=False,
     )
 
+    parser.add_argument(
+        "-c",
+        "--cleaner",
+        default=0,
+        type=int,
+        help="R|Set the index of the cleaner class to use. must be one of the following\n"
+             + convert_to_options_list(get_cleaners()),
+        required=False,
+    )
+
+    parser.add_argument(
+        "-ca",
+        "--cleaner-args",
+        default="",
+        type=str,
+        help="Set cleaner class args i.e. 'key=value , key2=value'",
+        required=False,
+    )
+
     args = parser.parse_args()
 
     if args.files is None:
         parser.print_help()
-    else:
-        files = args.files
-        if len(files) == 1 and os.path.isdir(files[0]):
-            asyncio.run(do_convert(
-                [os.path.join(files[0], x) for x in os.listdir(files[0])],
-                args.translator,
-                args.translator_args,
-                args.ocr,
-                args.ocr_args,
-                args.drawer,
-                args.drawer_args,
-            ))
-        else:
-            asyncio.run(do_convert(
-                files,
-                args.translator,
-                args.translator_args,
-                args.ocr,
-                args.ocr_args,
-                args.drawer,
-                args.drawer_args,
-            ))
+        return
+
+    chapters = find_chapters(args.files)
+
+    if len(chapters) == 0:
+        print("No chapters to convert")
+        return
+
+    print(f"Found {len(chapters)} chapter(s): {', '.join(c.name for c in chapters)}")
+
+    asyncio.run(do_convert(chapters, args))
 
 
 if __name__ == "__main__":

@@ -7,16 +7,48 @@ Forked from [TareHimself/manga-translator](https://github.com/TareHimself/manga-
 
 ## How it works
 
-The page runs through six stages, in `translator/pipelines.py`:
+A folder is treated as one chapter. It runs through six stages, in
+`translator/pipelines.py`:
 
 | # | Stage | What it does |
 |---|-------|--------------|
 | 1 | Detection | [YOLOv8](https://github.com/ultralytics/ultralytics) finds speech bubbles and free text |
 | 2 | Segmentation | A second YOLO model masks the text pixels inside them |
 | 3 | Cleaning | [LaMa](https://github.com/advimman/lama) inpaints the text away |
-| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads the original Japanese |
-| 5 | Translation | DeepL or DeepSeek translates it |
+| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads every bubble in the chapter, in reading order |
+| 5 | Translation | DeepSeek translates that whole list in one request |
 | 6 | Drawing | PIL lays the translation out and draws it into the cleaned bubble |
+
+Stages 1 to 3 and stage 6 run per page. Stages 4 and 5 run once for the whole
+chapter: every page is detected and cleaned first, then the chapter's dialogue is
+read and translated as a single ordered list, and only then is anything drawn.
+Translating a bubble on its own gives the model no idea who is speaking or what
+was just said, so lines are ordered the way the page is read — rows top to
+bottom, right to left within a row — and sent together.
+
+Chapters longer than the translator's `max_lines` (200 by default) are split
+across requests, with the previous lines carried over as context.
+
+### The three stages
+
+The six steps are grouped into three stages that can each be run on their own,
+with JSON between them:
+
+| Stage | Steps | Reads | Writes |
+|-------|-------|-------|--------|
+| `ocr` | 1–4 | the chapter's pages | `clean/` and `ocr.json` |
+| `translate` | 5 | `ocr.json` | `translated.json` |
+| `draw` | 6 | `translated.json` and `clean/` | the finished pages |
+
+Each stage builds only what it needs. `translate` and `draw` load no detection,
+cleaning or OCR model at all, so re-running them costs seconds rather than
+minutes — and `ocr` needs no API key.
+
+`ocr.json` holds, for every region, the box it will be drawn into, the text read
+out of it, and its language. `translated.json` is the same document with a
+translation filled in per region. Because the box travels with the text, the
+draw stage never has to detect anything again. Both are ordinary JSON: correct a
+translation by hand, re-run `-s draw`, and only the drawing happens again.
 
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
 its settings form from those declarations, so adding a backend means writing one
@@ -24,7 +56,7 @@ class and adding one line to the matching `get.py`.
 
 Each stage deliberately carries one good backend rather than a menu. The
 alternatives that used to be here — EasyOCR, Tesseract, DeepFillV2, OpenAI,
-Gemini, Google Cloud, Helsinki-NLP — were either worse on manga specifically,
+Gemini, Google Cloud, Helsinki-NLP, DeepL — were either worse on manga specifically,
 broken, or duplicated something that remains.
 
 ## Install
@@ -80,14 +112,35 @@ Commands are run from the repository root.
 
 ### CLI
 
-```bash
-python3 main.py -f image1.png image2.png   # a list of images
-python3 main.py -f ./input                 # or a folder
+`-f` takes the folder that holds your chapters. Each folder inside it is one
+chapter, and gets a folder of the same name under `output/`:
+
+```
+input/                        output/
+    my-oneshot/                   my-oneshot/
+        01.png                        clean/01.png     cleaned, no text
+        02.png                        clean/02.png
+                                      ocr.json         boxes and source text
+                                      translated.json  the same, translated
+                                      01.png           finished pages
+                                      02.png
 ```
 
-Results are written to `output/`. `python3 main.py --help` lists the available
-OCR, translator and drawer backends with their index numbers, which is what
-`-o`, `-t` and `-dr` take.
+```bash
+python3 main.py -f input                   # every chapter, every stage
+python3 main.py -f input -s ocr            # or one stage at a time
+python3 main.py -f input -s translate
+python3 main.py -f input -s draw
+```
+
+A chapter needs a folder. Images lying loose in the input root are skipped,
+since there would be no name to give their output folder. Pages are sorted
+naturally, so `page2` comes before `page10` — name them so they sort into
+reading order, because that order is what the translator sees. `python3 main.py --help` lists the available
+OCR, translator, drawer and cleaner backends with their index numbers, which is
+what `-o`, `-t`, `-dr` and `-c` take. Each has a matching `-oa`, `-ta`, `-dra`
+and `-ca` for that backend's settings, e.g. `-ca "dilation=15"` to erase more
+aggressively.
 
 `./run.sh` is a shortcut that creates the venv if needed, installs
 dependencies, and converts everything in `./input`.
@@ -109,11 +162,10 @@ cd ui && npm install && npm run build
 
 ### API keys
 
-Both translation backends need credentials. The web UI has a field for them per
-backend; `server.py` also reads a `.env` file in the repository root:
+The translation backend needs credentials. The web UI has a field for the key;
+`server.py` and `main.py` both read a `.env` file in the repository root:
 
 ```
-DEEPL_AUTH=...
 DEEPSEEK_API_KEY=...
 ```
 
@@ -131,84 +183,15 @@ project if you want to retrain.
 
 ## Examples
 
-Originals are in `examples/raw`, results in `examples/raw_converted`.
+`examples/raw` holds six sample pages. Pointing `-f` at `examples` treats
+`raw` as a chapter:
 
-<table>
-   <thead>
-      <tr>
-         <th align="center" width="50%">Original</th>
-         <th align="center" width="50%">Translated</th>
-      </tr>
-   </thead>
-   <tbody>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/jujutsu_kaisen.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/jujutsu_kaisen_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>Jujutsu Kaisen</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/solo_leveling.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/solo_leveling_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => "Meow"</br>Solo Leveling</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/the_rising_of_the_sheild_hero.jpg" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/the_rising_of_the_sheild_hero_converted.jpg" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => Clean</br>The Rising of the Shield Hero</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_a_certain_scientific_accelerator.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_a_certain_scientific_accelerator_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>A Certain Scientific Accelerator</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_one_punch_man.jpg" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_one_punch_man_converted.jpg" width="100%" />
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>One Punch Man</td>
-      </tr>
-      <tr>
-         <td align="center" width="50%">
-            <img alt="Original" src="examples/raw/ja_oshi_no_ko.png" width="100%"/>
-         </td>
-         <td align="center" width="50%">
-            <img alt="Result" src="examples/raw_converted/ja_oshi_no_ko_converted.png" width="100%"/>
-         </td>
-      </tr>
-      <tr>
-         <td colspan=2 align="center">Japanese => English</br>Oshi No Ko</td>
-      </tr>
-   </tbody>
-</table>
+```bash
+python3 main.py -f examples
+```
+
+The converted pages are written to `output/raw/`. They are not checked in, since
+the result depends on which model and target language you translate with.
 
 ## Glossary
 
