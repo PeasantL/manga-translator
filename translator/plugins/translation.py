@@ -2,7 +2,7 @@ import os
 import re
 import sys
 from translator.utils import get_languages
-from translator.core.plugin import (
+from translator.plugins.base import (
     Translator,
     TranslatorResult,
     OcrResult,
@@ -23,19 +23,17 @@ SYSTEM_PROMPT = (
     "Use the whole list for context: who is speaking, the tone, running jokes, "
     "names, and sentences that continue from one bubble into the next. Keep names "
     "and terms consistent across the chapter.\n\n"
+    "Make ONLY one pass over the lines while thinking. Read them in order, settle each "
+    "line as you reach it, and move on. NEVER go back over lines you have already "
+    "settled. DO NOT draft the whole translation twice - the reasoning shares "
+    "a token budget with the answer, and a second pass spends what the answer "
+    "needs. Think only once, then answer.\n\n"
     "Reply with exactly one line per input line, formatted as `<number>. "
     "<translation>`, in the same order and numbered the same way. Output nothing "
     "else: no blank lines, no commentary, no notes, no romanisation, no quotes "
     "around the translation, and no alternative renderings. Give a single "
     "translation per line. If a line cannot be translated, repeat it unchanged "
     "after its number."
-)
-
-
-SINGLE_PROMPT = (
-    "You translate manga dialogue. Reply with the translation only: no numbering, "
-    "no commentary, no notes, no romanisation, no quotes, and no alternative "
-    "renderings."
 )
 
 
@@ -75,7 +73,7 @@ class DeepSeekTranslator(Translator):
         max_lines="200",
         stream="true",
         reasoning_effort="low",
-        max_tokens="8192",
+        max_tokens="16384",
     ) -> None:
         super().__init__()
         from openai import AsyncOpenAI
@@ -163,22 +161,16 @@ class DeepSeekTranslator(Translator):
             if len(text) == 0:
                 missing.append(position)
 
-        # A dropped or malformed line would leave a bubble empty, so fall back to
-        # translating those on their own.
+        # A line the model dropped or mangled is left empty and its bubble is
+        # left as it was cleaned. Asking again for the same line rarely produces
+        # a different answer, and doing it one line at a time costs a request
+        # each and throws away the chapter context that makes the answer good.
         if len(missing) > 0:
             print(
-                f"DeepSeek did not return {len(missing)} of {len(chunk)} lines, "
-                "retrying those individually"
+                f"DeepSeek did not return {len(missing)} of {len(chunk)} lines: "
+                f"{', '.join(str(p) for p in missing)}. Those bubbles are left "
+                "empty - fill them in in translated.json and re-run -s draw"
             )
-
-            for position in missing:
-                source = chunk[position - 1][1]
-                single = await self.ask(
-                    f"Translate from {source_lang.upper()} to "
-                    f"{self.target_lang.upper()}.\n{source.text}",
-                    system=SINGLE_PROMPT,
-                )
-                translated[position - 1] = self.strip_numbering(single.strip())
 
         return translated
 
@@ -192,9 +184,9 @@ class DeepSeekTranslator(Translator):
             "max_tokens": self.max_tokens,
         }
 
-    async def ask(self, content: str, system: str = SYSTEM_PROMPT) -> str:
+    async def ask(self, content: str) -> str:
         messages = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": content},
         ]
 
@@ -270,17 +262,6 @@ class DeepSeekTranslator(Translator):
             )
 
         return "".join(answer)
-
-    @staticmethod
-    def strip_numbering(text: str) -> str:
-        """Drop a leading "1. " from a single line reply.
-
-        The model sometimes numbers a one line answer anyway, and left in, that
-        number gets drawn into the bubble.
-        """
-        match = NUMBERED_LINE.match(text)
-
-        return match.group(2).strip() if match is not None else text
 
     @staticmethod
     def parse_numbered(reply: str) -> dict[int, str]:
@@ -369,7 +350,7 @@ class DeepSeekTranslator(Translator):
                 name="Max Output Tokens",
                 description="Cap on the reply. Reasoning counts towards this, so "
                 "raise it if long chapters come back truncated",
-                default="8192",
+                default="16384",
             ),
             PluginTextArgument(
                 id="max_lines",
@@ -379,4 +360,27 @@ class DeepSeekTranslator(Translator):
                 "context",
                 default="200",
             ),
+        ]
+
+
+class DebugTranslator(Translator):
+    """Writes the specified text"""
+
+    def __init__(self, text="") -> None:
+        super().__init__()
+        self.to_write = text
+
+    async def translate(self, batch: list[OcrResult]):
+        return [TranslatorResult(self.to_write) for _ in batch]
+
+    @staticmethod
+    def get_name() -> str:
+        return "Custom Text"
+
+    @staticmethod
+    def get_arguments() -> list[PluginArgument]:
+        return [
+            PluginTextArgument(
+                id="text", name="Debug Text", description="What to write"
+            )
         ]

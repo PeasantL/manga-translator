@@ -3,16 +3,25 @@ from dotenv import load_dotenv
 load_dotenv()
 import argparse
 import ast
-import cv2
 import asyncio
 import os
-from translator.pipelines import FullConversion, draw_page, align_translations
-from translator.translators.get import get_translators
-from translator.ocr.get import get_ocr
-from translator.drawers.get import get_drawers
-from translator.cleaners.get import get_cleaners
-from translator.chapter import find_chapters, Chapter, ChapterDocument, Page, Region, CLEAN_DIR
-from translator.core.plugin import OcrResult, TranslatorResult
+from translator.pipeline import FullConversion, draw_page, align_translations
+from translator.plugins import (
+    get_translators,
+    get_ocr,
+    get_drawers,
+    get_cleaners,
+)
+from translator.chapter import (
+    find_chapters,
+    Chapter,
+    ChapterDocument,
+    Page,
+    Region,
+    CLEAN_DIR,
+)
+from translator.plugins import OcrResult, TranslatorResult
+from translator.utils import read_image, write_image
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -69,7 +78,7 @@ def load_pages(chapter: Chapter) -> list[tuple[str, "object"]]:
     loaded = []
 
     for path in chapter.pages:
-        frame = cv2.imread(path)
+        frame = read_image(path)
 
         if frame is None:
             print(f"Skipping {path}, could not be read as an image")
@@ -118,14 +127,23 @@ async def stage_ocr(chapter: Chapter, args):
         clean_name = os.path.splitext(name)[0] + ".png"
         clean_relative = f"{CLEAN_DIR}/{clean_name}"
 
-        cv2.imwrite(os.path.join(chapter.output_dir, CLEAN_DIR, clean_name), page.frame)
+        clean_path = os.path.join(chapter.output_dir, CLEAN_DIR, clean_name)
+
+        if not write_image(clean_path, page.frame):
+            print(f"{chapter.name}: could not write {clean_path}")
 
         regions = []
-        for box in page.draw_boxes:
+        for box, (text_color, background_color) in zip(page.draw_boxes, page.colors):
             result = ocr_results[position] if position < len(ocr_results) else OcrResult()
             position += 1
             regions.append(
-                Region(box=list(box), text=result.text, language=result.language)
+                Region(
+                    box=list(box),
+                    text=result.text,
+                    language=result.language,
+                    text_color=text_color,
+                    background_color=background_color,
+                )
             )
 
         height, width = page.frame.shape[:2]
@@ -187,7 +205,9 @@ async def stage_draw(chapter: Chapter, args):
     """Step 6: draw translated.json onto the cleaned pages.
 
     Reads the cleaned pages and the JSON, so no vision or language model is
-    loaded here either.
+    loaded here either. The finished pages go in their own folder next to the
+    cleaned ones, so that what this stage produced can be handed over, deleted or
+    re-made without touching the input to it.
     """
     document = ChapterDocument.load(chapter.translated_path)
 
@@ -195,11 +215,13 @@ async def stage_draw(chapter: Chapter, args):
         **json_to_args(args.drawer_args)
     )
 
+    os.makedirs(chapter.drawn_dir, exist_ok=True)
+
     written = 0
 
     for page in document.pages:
         clean_path = os.path.join(chapter.output_dir, page.clean)
-        frame = cv2.imread(clean_path)
+        frame = read_image(clean_path)
 
         if frame is None:
             print(f"{chapter.name}: missing cleaned page {clean_path}, skipping")
@@ -213,12 +235,15 @@ async def stage_draw(chapter: Chapter, args):
                 for r in page.regions
             ],
             drawer,
+            [(r.text_color, r.background_color) for r in page.regions],
         )
 
-        cv2.imwrite(os.path.join(chapter.output_dir, page.name), drawn)
-        written += 1
+        if write_image(os.path.join(chapter.drawn_dir, page.name), drawn):
+            written += 1
+        else:
+            print(f"{chapter.name}: could not write {page.name}")
 
-    print(f"{chapter.name}: wrote {written} pages to {chapter.output_dir}/")
+    print(f"{chapter.name}: wrote {written} pages to {chapter.drawn_dir}/")
 
 
 async def do_convert(chapters: list, args):
@@ -241,8 +266,11 @@ async def do_convert(chapters: list, args):
                     await stage_translate(chapter, args)
                 else:
                     await stage_draw(chapter, args)
-            except FileNotFoundError as missing:
-                print(f"{chapter.name}: {missing}")
+            except (FileNotFoundError, ValueError) as problem:
+                # A missing artifact, or one written by a build that used a
+                # different schema. Either way the later stages have nothing to
+                # work from, so stop on this chapter rather than half convert it.
+                print(f"{chapter.name}: {problem}")
                 break
 
 

@@ -1,17 +1,18 @@
 """Chapters: a folder of pages in, a folder of the same name out.
 
-A chapter is a folder of images under the input root. Loose images sitting
-directly in the input root are not a chapter and are skipped - a chapter needs a
-folder so that its results have a folder of the same name to go into:
+A chapter is a folder of images. The folder you point the tool at is that
+chapter - not a container of chapters - and its results go to a folder of the
+same name under the output root:
 
-    input/                        output/
-        my-oneshot/                   my-oneshot/
-            01.png                        clean/01.png
-            02.png                        clean/02.png
-                                          ocr.json
-                                          translated.json
-                                          01.png
-                                          02.png
+    input/my-oneshot/             output/my-oneshot/
+        01.png                        clean/01.png
+        02.png                        clean/02.png
+                                      drawn/01.png
+                                      drawn/02.png
+                                      ocr.json
+                                      translated.json
+
+Pass several folders to convert several chapters in one run.
 """
 
 import json
@@ -22,6 +23,7 @@ from translator.utils import natural_sort_key
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 CLEAN_DIR = "clean"
+DRAWN_DIR = "drawn"
 OCR_FILE = "ocr.json"
 TRANSLATED_FILE = "translated.json"
 
@@ -37,6 +39,10 @@ class Chapter:
     @property
     def clean_dir(self) -> str:
         return os.path.join(self.output_dir, CLEAN_DIR)
+
+    @property
+    def drawn_dir(self) -> str:
+        return os.path.join(self.output_dir, DRAWN_DIR)
 
     @property
     def ocr_path(self) -> str:
@@ -67,55 +73,57 @@ def pages_in(folder: str) -> list[str]:
     ]
 
 
+def subfolders_of(folder: str) -> list[str]:
+    return [
+        name
+        for name in sorted(os.listdir(folder), key=natural_sort_key)
+        if os.path.isdir(os.path.join(folder, name))
+    ]
+
+
 def find_chapters(paths: list[str], output_root: str = "output") -> list[Chapter]:
     """Resolve the -f argument into chapters.
 
-    A single folder is an input root: each of its subfolders is a chapter, and
-    any images lying loose in the root are skipped. An explicit list of files is
-    grouped into chapters by the folder each file sits in.
+    Every folder given is one chapter, named after the folder, with the images
+    directly inside it as its pages. Files given directly are grouped into
+    chapters by the folder each one sits in, so that a chapter always has a
+    folder to take its name from.
     """
     chapters = []
+    grouped: dict[str, list[str]] = {}
 
-    if len(paths) == 1 and os.path.isdir(paths[0]):
-        root = paths[0]
-        loose = []
+    for path in paths:
+        if os.path.isdir(path):
+            pages = pages_in(path)
+            name = os.path.basename(os.path.abspath(path))
 
-        for name in sorted(os.listdir(root), key=natural_sort_key):
-            entry = os.path.join(root, name)
+            if len(pages) > 0:
+                chapters.append(Chapter(name, pages, os.path.join(output_root, name)))
+                continue
 
-            if os.path.isdir(entry):
-                pages = pages_in(entry)
+            # Most likely a folder of chapters rather than a chapter, which is
+            # what this used to accept, so say what to do about it.
+            inner = subfolders_of(path)
 
-                if len(pages) == 0:
-                    print(f"Skipping {entry}, no images in it")
-                else:
-                    chapters.append(
-                        Chapter(name, pages, os.path.join(output_root, name))
-                    )
-            elif is_image(entry):
-                loose.append(name)
-
-        if len(loose) > 0:
-            print(
-                f"Skipping {len(loose)} loose image(s) in {root}: "
-                "put each chapter in its own folder"
-            )
-    else:
-        # An explicit list of files. Group by the folder each one is in so that
-        # the chapter still has a name to give its output folder.
-        grouped: dict[str, list[str]] = {}
-
-        for path in paths:
-            if not os.path.isfile(path):
-                print(f"Skipping {path}, not a file")
-            elif not is_image(path):
-                print(f"Skipping {path}, not a supported image type")
+            if len(inner) > 0:
+                print(
+                    f"Skipping {path}, no images directly in it. It holds "
+                    f"{len(inner)} folder(s) - pass those instead, each one is "
+                    "a chapter"
+                )
             else:
+                print(f"Skipping {path}, no images in it")
+        elif os.path.isfile(path):
+            if is_image(path):
                 name = os.path.basename(os.path.dirname(os.path.abspath(path)))
                 grouped.setdefault(name, []).append(path)
+            else:
+                print(f"Skipping {path}, not a supported image type")
+        else:
+            print(f"Skipping {path}, not a file or folder")
 
-        for name, pages in grouped.items():
-            chapters.append(Chapter(name, pages, os.path.join(output_root, name)))
+    for name, pages in grouped.items():
+        chapters.append(Chapter(name, pages, os.path.join(output_root, name)))
 
     return chapters
 
@@ -125,6 +133,8 @@ class Region:
 
     `box` is the area the translation is drawn into, in the page's pixel
     coordinates, which is all stage 6 needs to place text without redetecting.
+    The colours are measured while the original text is still on the page, so
+    that stage 6 can letter a white on black bubble without looking at the art.
     """
 
     def __init__(
@@ -133,11 +143,20 @@ class Region:
         text: str = "",
         language: str = "",
         translation: str = "",
+        text_color: list[int] = None,
+        background_color: list[int] = None,
     ) -> None:
         self.box = [int(v) for v in box]
         self.text = text
         self.language = language
         self.translation = translation
+        # Both BGR, like everything else that came out of OpenCV, and both
+        # measured off the page while the text was still there. null means the
+        # cleaner found no glyphs to measure.
+        self.text_color = list(text_color) if text_color is not None else None
+        self.background_color = (
+            list(background_color) if background_color is not None else None
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -145,6 +164,8 @@ class Region:
             "text": self.text,
             "language": self.language,
             "translation": self.translation,
+            "text_color": self.text_color,
+            "background_color": self.background_color,
         }
 
     @classmethod
@@ -154,6 +175,8 @@ class Region:
             text=data.get("text", ""),
             language=data.get("language", ""),
             translation=data.get("translation", ""),
+            text_color=data.get("text_color"),
+            background_color=data.get("background_color"),
         )
 
 
@@ -207,7 +230,7 @@ class ChapterDocument:
     the translator needs to make sense of it.
     """
 
-    SCHEMA = 1
+    SCHEMA = 2
 
     def __init__(
         self,

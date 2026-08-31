@@ -7,14 +7,16 @@ import io
 import asyncio
 from tornado.web import RequestHandler, Application
 from translator.utils import cv2_to_pil, pil_to_cv2, run_in_thread_decorator
-from translator.pipelines import FullConversion
-from translator.translators.get import get_translators
-from translator.translators.deepseek import DeepSeekTranslator
-from translator.ocr.get import get_ocr
-from translator.ocr.no import NoOcr
-from translator.ocr.huggingface_ja import JapaneseOcr
-from translator.drawers.get import get_drawers
-from translator.cleaners.get import get_cleaners
+from translator.pipeline import FullConversion
+from translator.plugins import (
+    get_translators,
+    get_ocr,
+    get_drawers,
+    get_cleaners,
+    DeepSeekTranslator,
+    JapaneseOcr,
+    NoOcr,
+)
 from PIL import Image
 import json
 import webbrowser
