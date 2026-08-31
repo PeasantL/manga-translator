@@ -634,6 +634,11 @@ def try_merge_hyphenated(text: list[str], max_chars: int):
     return final
 
 
+# A one or two letter piece before the hyphen reads badly, so a split that short
+# is only taken when the line is empty and there is nothing else to try.
+MIN_HYPHEN_FRAGMENT = 3
+
+
 def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
     total = deque(list(filter(lambda a: len(a.strip()) > 0, text.split(" "))))
 
@@ -647,8 +652,6 @@ def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
         sep = " " if len(current_line) > 0 else ""
         new_current = current_line + sep + current_word
         if len(new_current) > max_chars:
-            space_left = max_chars - len(current_line + sep)
-
             try:
                 if "-" in current_word:
                     idx = current_word.index("-")
@@ -669,20 +672,40 @@ def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
                 current_line = ""
                 continue
 
-            pair = min(pairs, key=lambda a: len(current_line + sep + a[0] + "-"))
-            if len(current_line + sep + pair[0] + "-") > space_left:
-                lines.append(current_line)
-                if len(pair[0] + "-") <= max_chars:
-                    lines.append(pair[0] + "-")
-                    current_line = ""
-                    current_word = pair[1]
-                    continue
-                else:
-                    return None
+            # Every split that still fits what is already on the line.
+            usable = [
+                pair
+                for pair in pairs
+                if len(current_line + sep + pair[0] + "-") <= max_chars
+            ]
 
-            lines.append(current_line + sep + pair[0] + "-")
-            current_line = ""
-            current_word = pair[1]
+            if len(current_line) > 0:
+                usable = [
+                    pair for pair in usable if len(pair[0]) >= MIN_HYPHEN_FRAGMENT
+                ]
+
+            if len(usable) > 0:
+                # The last split that fits, not the first: hyphenating at the
+                # earliest legal point leaves most of the line empty and turns a
+                # narrow bubble into a column of fragments.
+                pair = max(usable, key=lambda a: len(a[0]))
+
+                lines.append(current_line + sep + pair[0] + "-")
+                current_line = ""
+                current_word = pair[1]
+                continue
+
+            # Nothing worth splitting at fits after what is already on the line,
+            # so end the line and try the word again on a fresh one, where more
+            # of it fits.
+            if len(current_line) > 0:
+                lines.append(current_line)
+                current_line = ""
+                continue
+
+            # The line is empty and not even the shortest split fits it, so no
+            # font size this large can lay this text out.
+            return None
         elif len(total) == 0:
             lines.append(current_line + sep + current_word)
             current_word = ""
