@@ -42,9 +42,9 @@ class HorizontalDrawer(Drawer):
     def __init__(
         self,
         font_file="fonts/animeace2_reg.ttf",
-        max_font_size="13",
+        max_font_size="14",
         line_spacing="2",
-        min_font_size="13",
+        min_font_size="14",
         hyphenate="last",
     ) -> None:
         super().__init__()
@@ -301,7 +301,7 @@ class HorizontalDrawer(Drawer):
                 name="Max Font Size",
                 description="The size text starts at, shrinking from there until "
                 "it fits. Set equal to the minimum for one size everywhere",
-                default="13",
+                default="14",
             ),
             PluginArgument(
                 id="line_spacing",
@@ -333,7 +333,7 @@ class HorizontalDrawer(Drawer):
                 description="The smallest readable font size. Text that will not "
                 "fit its bubble at this size spills past it at this size, with "
                 "white behind it, instead of being shrunk further",
-                default="13",
+                default="14",
             ),
         ]
 
