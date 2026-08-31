@@ -12,9 +12,10 @@ from translator.utils import (
     reading_order_indices,
     measure_region_colors,
     drawing_colors,
+    get_torch_device,
+    get_yolo_device,
 )
 import traceback
-import torch
 import asyncio
 from typing import Union
 from translator.plugins import (
@@ -161,10 +162,10 @@ class FullConversion:
         # arguments they were evaluated once at import time, so merely importing this
         # module downloaded and loaded the LaMa weights - even for `main.py --help`.
         if device is None:
-            device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+            device = get_torch_device()
 
         if yolo_device is None:
-            yolo_device = 0 if torch.cuda.is_available() else "cpu"
+            yolo_device = get_yolo_device(device)
 
         if detect_model is None:
             detect_model = get_model_path("detection.pt")
@@ -173,7 +174,16 @@ class FullConversion:
             seg_model = get_model_path("segmentation.pt")
 
         self.device = device
-        print("Pipeline created using",device)
+        print(f"Running on {device.type}")
+
+        if device.type == "cpu":
+            # Easy to end up here without noticing: pip installs the CPU only
+            # torch wheel by default, whatever card is in the machine.
+            print(
+                "  no GPU available to torch. If there is one, install the CUDA "
+                "build of torch - see requirements.txt"
+            )
+
         self.yolo_device = yolo_device
         self.segmentation_model = load_yolo(seg_model)
         self.detection_model = load_yolo(detect_model)

@@ -54,7 +54,28 @@ def run_in_thread_decorator(func):
 
     
 def get_torch_device() -> torch.device:
-    return torch.device('cuda') if torch.cuda.is_available() else (torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu'))
+    """The best device available: CUDA, then Apple's MPS, then the CPU.
+
+    Every stage that loads a model asks this, so there is one answer to what the
+    run is using rather than one per model.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+
+    return torch.device("cpu")
+
+
+def get_yolo_device(device: torch.device = None):
+    """The same device, spelled the way ultralytics wants it."""
+    device = device if device is not None else get_torch_device()
+
+    if device.type == "cuda":
+        return device.index if device.index is not None else 0
+
+    return device.type
 
 def simplify_lang_code(code: str) -> Union[str, None]:
     try:

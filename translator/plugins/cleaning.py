@@ -1,6 +1,11 @@
 from numpy import ndarray
 from translator.plugins.base import Cleaner, PluginArgument, PluginTextArgument
-from translator.utils import in_paint_optimized, cv2_to_pil, pil_to_cv2
+from translator.utils import (
+    in_paint_optimized,
+    cv2_to_pil,
+    pil_to_cv2,
+    get_torch_device,
+)
 
 
 # Shared across instances so that a new LamaCleaner per web request does not
@@ -15,7 +20,10 @@ def get_lama():
     if _lama is None:
         from simple_lama_inpainting import SimpleLama
 
-        _lama = SimpleLama()
+        # Told which device to use rather than left to its own default, which
+        # knows about CUDA but not about MPS, and which is worked out once when
+        # that module is first imported.
+        _lama = SimpleLama(device=get_torch_device())
 
     return _lama
 
