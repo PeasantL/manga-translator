@@ -767,6 +767,7 @@ def get_best_font_size(
     min_chars_per_line: int = 6,
     initial_iterations: int = 0,
     hyphenator: Union[Hyphenator, None] = None,
+    min_size: int = 1,
 ) -> Union[tuple[None, None, None, int], tuple[int, int, int, int]]:
     current_font_size = start_size
     current_font = None
@@ -776,7 +777,9 @@ def get_best_font_size(
     while True:
         iterations += 1
 
-        if current_font_size < 0:
+        # Below min_size the text is too small to read, so report that it does
+        # not fit rather than shrinking it into illegibility.
+        if current_font_size < min_size:
             return None, None, None, iterations
 
         current_font = ImageFont.truetype(font_file, current_font_size)
@@ -803,6 +806,77 @@ def get_best_font_size(
         current_font_size -= step
 
 
+
+
+def fit_box(
+    text: str,
+    box: tuple[int, int, int, int],
+    page_shape: tuple,
+    font_file: str,
+    min_font_size: int,
+    space_between_lines: int = 2,
+    hyphenator: Union[Hyphenator, None] = None,
+    max_scale: float = 2.5,
+) -> tuple[tuple[int, int, int, int], bool]:
+    """How much room this text needs, and whether that is more than it was given.
+
+    A long translation in a small bubble used to be shrunk until it fit, which
+    at some point means unreadable, or dropped entirely when even that failed.
+    Instead the box is grown around its own centre until the text fits at the
+    minimum readable size. The caller is told when that happened, so the text
+    can be drawn on a backdrop - it is now over artwork, not over a cleaned
+    bubble.
+    """
+    page_height, page_width = page_shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in box)
+    width, height = x2 - x1, y2 - y1
+
+    if width <= 0 or height <= 0 or len(text.strip()) == 0:
+        return (x1, y1, x2, y2), False
+
+    def fits(w: int, h: int) -> bool:
+        size, _, _, _ = get_best_font_size(
+            text,
+            (w, h),
+            font_file=font_file,
+            space_between_lines=space_between_lines,
+            start_size=min_font_size,
+            step=1,
+            hyphenator=hyphenator,
+            min_size=min_font_size,
+        )
+
+        return size is not None
+
+    if fits(width, height):
+        return (x1, y1, x2, y2), False
+
+    centre_x, centre_y = x1 + (width / 2), y1 + (height / 2)
+    grown = (x1, y1, x2, y2)
+    scale = 1.0
+
+    while scale < max_scale:
+        scale += 0.1
+
+        new_width = min(page_width, round(width * scale))
+        new_height = min(page_height, round(height * scale))
+
+        # Keep the text over the bubble it came from, but never off the page.
+        new_x1 = int(max(0, min(page_width - new_width, round(centre_x - (new_width / 2)))))
+        new_y1 = int(max(0, min(page_height - new_height, round(centre_y - (new_height / 2)))))
+
+        grown = (new_x1, new_y1, new_x1 + new_width, new_y1 + new_height)
+
+        if fits(new_width, new_height):
+            return grown, True
+
+        if new_width == page_width and new_height == page_height:
+            break
+
+    # Nothing fit even at the largest allowed size. Hand back the biggest box
+    # tried anyway; the drawer draws at the minimum size and overflows it, which
+    # is still more use than an empty bubble.
+    return grown, True
 
 
 class COCO_TO_YOLO_TASK:

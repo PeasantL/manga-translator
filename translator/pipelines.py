@@ -52,27 +52,36 @@ async def draw_page(
         return frame
 
     try:
-        draw_colors = [
-            (
-                TranslatorGlobals.COLOR_BLACK,
-                TranslatorGlobals.COLOR_BLACK,
-                False,
-            )
-            for _ in draw_boxes
-        ]
+        color = (
+            TranslatorGlobals.COLOR_BLACK,
+            TranslatorGlobals.COLOR_BLACK,
+            False,
+        )
 
+        # The drawer says how much room the text needs. A translation too long
+        # for its bubble is drawn over the surrounding art at a readable size,
+        # on a backdrop, rather than being shrunk until nobody can read it.
+        boxes = []
         to_draw = []
-        for bbox, translation, color in zip(draw_boxes, translations, draw_colors):
-            (x1, y1, x2, y2) = bbox
-            draw_area = frame[y1:y2, x1:x2].copy()
+
+        for bbox, translation in zip(draw_boxes, translations):
+            box, expanded = drawer.box_for(translation.text, bbox, frame.shape)
+
+            (x1, y1, x2, y2) = box
+            boxes.append(box)
 
             to_draw.append(
-                Drawable(color=color, frame=draw_area, translation=translation)
+                Drawable(
+                    color=color,
+                    frame=frame[y1:y2, x1:x2].copy(),
+                    translation=translation,
+                    backdrop=expanded,
+                )
             )
 
         drawn_frames = await drawer(to_draw)
 
-        for bbox, drawn_frame in zip(draw_boxes, drawn_frames):
+        for bbox, drawn_frame in zip(boxes, drawn_frames):
             (x1, y1, x2, y2) = bbox
             drawn_frame, drawn_frame_mask = drawn_frame
             frame[y1:y2, x1:x2] = apply_mask(
