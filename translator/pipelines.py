@@ -16,7 +16,7 @@ import traceback
 import torch
 import asyncio
 from typing import Union
-from translator.core.plugin import Drawable, Translator, Ocr, Drawer, Cleaner
+from translator.core.plugin import Drawable, Translator, Ocr, Drawer, Cleaner, TranslatorResult
 from translator.cleaners.lama import LamaCleaner
 from translator.drawers.horizontal import HorizontalDrawer
 
@@ -34,6 +34,23 @@ def load_yolo(path: str) -> YOLO:
         _yolo_models[resolved] = YOLO(resolved)
 
     return _yolo_models[resolved]
+
+
+class PageLayout:
+    """One page after cleaning, plus the text regions it contributes to the chapter.
+
+    draw_boxes and text_crops are parallel and in reading order.
+    """
+
+    def __init__(
+        self,
+        frame: np.ndarray,
+        draw_boxes: list[tuple[int, int, int, int]],
+        text_crops: list[np.ndarray],
+    ) -> None:
+        self.frame = frame
+        self.draw_boxes = draw_boxes
+        self.text_crops = text_crops
 
 
 class FullConversion:
@@ -121,7 +138,13 @@ class FullConversion:
 
         return frame, frame_clean, text_mask, detect_result
 
-    async def process_frame(self, detect_result, seg_result, input_frame):
+    async def prepare_frame(self, detect_result, seg_result, input_frame) -> "PageLayout":
+        """Stages 1 to 3 for one page: detect, clean, and collect its text regions.
+
+        Returns the cleaned page plus the regions to translate, in reading order.
+        OCR and translation deliberately do not happen here - they run once for the
+        whole chapter so the translator can use the surrounding dialogue.
+        """
         try:
             frame, frame_clean, text_mask, detect_result = await self.process_ml_results(
                 detect_result, seg_result, input_frame
@@ -197,77 +220,143 @@ class FullConversion:
                 order = reading_order_indices([x[0] for x in to_translate])
                 to_translate = [to_translate[i] for i in order]
 
-            # third pass, draw text
+            return PageLayout(
+                frame=frame,
+                draw_boxes=[x[0] for x in to_translate],
+                text_crops=[x[1] for x in to_translate],
+            )
+        except:
+            traceback.print_exc()
+            return PageLayout(frame=input_frame, draw_boxes=[], text_crops=[])
+
+    async def render_frame(self, page: "PageLayout", translations: list) -> np.ndarray:
+        """Stage 6 for one page: draw the chapter's translations back into it."""
+        if len(page.draw_boxes) == 0:
+            return page.frame
+
+        try:
             draw_colors = [
                 (
                     TranslatorGlobals.COLOR_BLACK,
                     TranslatorGlobals.COLOR_BLACK,
                     False,
                 )
-                for _ in to_translate
+                for _ in page.draw_boxes
             ]
 
-            start = time.time()
-
             to_draw = []
+            for bbox, translation, color in zip(
+                page.draw_boxes, translations, draw_colors
+            ):
+                (x1, y1, x2, y2) = bbox
+                draw_area = page.frame[y1:y2, x1:x2].copy()
 
-            if self.translator and self.ocr and len(to_translate) > 0:
-                bboxes,images = zip(*to_translate)
+                to_draw.append(
+                    Drawable(color=color, frame=draw_area, translation=translation)
+                )
 
-                #the ocr result, check here for the translation 
-                ocr_results = await self.ocr(list(images))
+            drawn_frames = await self.drawer(to_draw)
 
-                translation_results = await self.translator(ocr_results)
+            for bbox, drawn_frame in zip(page.draw_boxes, drawn_frames):
+                (x1, y1, x2, y2) = bbox
+                drawn_frame, drawn_frame_mask = drawn_frame
+                page.frame[y1:y2, x1:x2] = apply_mask(
+                    drawn_frame, page.frame[y1:y2, x1:x2], drawn_frame_mask
+                )
 
-                to_draw = []
-                for bbox,translation,color in zip(bboxes,translation_results,draw_colors):
-
-                    (x1, y1, x2, y2) = bbox
-                    draw_area = frame[y1:y2, x1:x2].copy()
-
-                    to_draw.append(Drawable(color=color,frame=draw_area,translation=translation))
-
-                    
-
-                print(f"Ocr And Translation => {time.time() - start} seconds")
-
-                start = time.time()
-
-                drawn_frames = await self.drawer(to_draw)
-
-
-                for bbox, drawn_frame in zip(bboxes,drawn_frames):
-                    (x1, y1, x2, y2) = bbox
-                    drawn_frame,drawn_frame_mask = drawn_frame
-                    frame[y1:y2, x1:x2] = apply_mask(drawn_frame,frame[y1:y2, x1:x2],drawn_frame_mask)
-
-                    
-
-                print(f"Drawing => {time.time() - start} seconds")
-            return frame
+            return page.frame
         except:
             traceback.print_exc()
-            return input_frame
+            return page.frame
 
     async def __call__(
         self,
         images: list[np.ndarray],
+        detect_batch_size: int = 4,
+        ocr_batch_size: int = 32,
     ) -> list[np.ndarray]:
+        """Convert a chapter.
+
+        The whole list is treated as one unit of dialogue: every page is detected
+        and cleaned first, then the chapter's text is read in one OCR pass and
+        translated in one translation pass, and only then is anything drawn. That
+        ordering is what lets the translator see a line's surrounding dialogue.
+
+        Detection and OCR still run in chunks so that a long chapter does not have
+        to fit through those models all at once.
+        """
         total_start = time.time()
-        start = time.time()
-        to_process = [
-            x
-            for x in zip(
-                self.detection_model(images, device=self.yolo_device, verbose=False),
-                self.segmentation_model(images, device=self.yolo_device, verbose=False),
-                images,
+
+        pages: list[PageLayout] = []
+
+        for i in range(0, len(images), detect_batch_size):
+            chunk = images[i:i + detect_batch_size]
+
+            start = time.time()
+            detections = self.detection_model(chunk, device=self.yolo_device, verbose=False)
+            segmentations = self.segmentation_model(chunk, device=self.yolo_device, verbose=False)
+            print(f"Yolov8 Models => {time.time() - start} seconds")
+
+            pages.extend(
+                await asyncio.gather(
+                    *[
+                        self.prepare_frame(
+                            detect_result=detect_result,
+                            seg_result=seg_result,
+                            input_frame=frame,
+                        )
+                        for detect_result, seg_result, frame in zip(
+                            detections, segmentations, chunk
+                        )
+                    ]
+                )
             )
-        ]
 
-        print(f"Yolov8 Models => {time.time() - start} seconds")
+        text_crops = [crop for page in pages for crop in page.text_crops]
 
-        tasks = [self.process_frame(detect_result=detect_result,seg_result=seg_result,input_frame=frame) for detect_result, seg_result, frame in to_process]
-        results = await asyncio.gather(*tasks)
+        print(f"Found {len(text_crops)} text regions across {len(pages)} pages")
 
+        translations = []
+
+        if self.translator and self.ocr and len(text_crops) > 0:
+            start = time.time()
+            ocr_results = []
+            for i in range(0, len(text_crops), ocr_batch_size):
+                ocr_results.extend(await self.ocr(text_crops[i:i + ocr_batch_size]))
+            print(f"Ocr => {time.time() - start} seconds")
+
+            start = time.time()
+            translations = list(await self.translator(ocr_results))
+            print(f"Translation => {time.time() - start} seconds")
+
+            # A translator returning the wrong count would otherwise shift every
+            # later page's dialogue onto the wrong bubbles.
+            if len(translations) != len(text_crops):
+                print(
+                    f"Translator returned {len(translations)} results for "
+                    f"{len(text_crops)} regions, padding the difference"
+                )
+                translations = (
+                    translations + [TranslatorResult("")] * len(text_crops)
+                )[: len(text_crops)]
+
+        start = time.time()
+        results = []
+        offset = 0
+
+        for page in pages:
+            count = len(page.draw_boxes)
+
+            if translations:
+                results.append(
+                    await self.render_frame(page, translations[offset:offset + count])
+                )
+            else:
+                results.append(page.frame)
+
+            offset += count
+
+        print(f"Drawing => {time.time() - start} seconds")
         print(f"Total Process => {time.time() - total_start} seconds")
+
         return results

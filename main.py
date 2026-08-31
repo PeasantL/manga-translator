@@ -6,7 +6,6 @@ import ast
 import cv2
 import asyncio
 import os
-import math
 from translator.pipelines import FullConversion
 from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
@@ -100,34 +99,36 @@ async def do_convert(files: list[str], translator: int, translator_args: str, oc
         cleaner=select_plugin(get_cleaners(), cleaner, "cleaner")(**json_to_args(cleaner_args)),
     )
 
-    filenames = files
-    batches = math.ceil(len(filenames) / 4)
     output_dir = 'output'  # Define the output directory
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)  # Create the directory if it doesn't exist
 
-    for i in range(batches):
-        files_to_convert = filenames[i * 4: (i + 1) * 4]
+    # The whole set is handed over at once. A folder is one chapter, and the
+    # translator is given its dialogue as a single ordered list so it can use the
+    # surrounding lines for context. FullConversion still chunks the models it
+    # runs page by page.
+    loaded = []
+    for file in files:
+        frame = cv2.imread(file)
+        if frame is None:
+            print(f"Skipping {file}, could not be read as an image")
+        else:
+            loaded.append((file, frame))
 
-        loaded = []
-        for file in files_to_convert:
-            frame = cv2.imread(file)
-            if frame is None:
-                print(f"Skipping {file}, could not be read as an image")
-            else:
-                loaded.append((file, frame))
+    if len(loaded) == 0:
+        print("No images to convert")
+        return
 
-        if len(loaded) == 0:
-            continue
+    print(f"Converting {len(loaded)} pages as one chapter")
 
-        for filename, data in zip(
-                [x[0] for x in loaded], await converter([x[1] for x in loaded])
-        ):
-            frame = data
-            base, ext = os.path.splitext(os.path.basename(filename))
-            new_filename = os.path.join(output_dir, base + "_converted" + (ext if ext else ".png"))
-            cv2.imwrite(new_filename, frame)
-        print(f"Converted Batch {i + 1}/{batches}")
+    for filename, frame in zip(
+            [x[0] for x in loaded], await converter([x[1] for x in loaded])
+    ):
+        base, ext = os.path.splitext(os.path.basename(filename))
+        new_filename = os.path.join(output_dir, base + "_converted" + (ext if ext else ".png"))
+        cv2.imwrite(new_filename, frame)
+
+    print(f"Wrote {len(loaded)} pages to {output_dir}/")
 
 
 def main():
