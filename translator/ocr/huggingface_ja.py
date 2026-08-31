@@ -7,12 +7,20 @@ from translator.utils import cv2_to_pil, get_torch_device
 from translator.core.plugin import Ocr, OcrResult
 
 
+# Same reasoning as the cleaner: one loaded model per name, not one per request.
+_pipelines = {}
+
+
 class JapaneseOcr(Ocr):
     """Only Supports Japanese"""
 
     def __init__(self,model='TareHimself/manga-ocr-base') -> None:
         super().__init__()
-        self.pipeline = pipeline("image-to-text", model=model, device=get_torch_device())
+
+        if model not in _pipelines:
+            _pipelines[model] = pipeline("image-to-text", model=model, device=get_torch_device())
+
+        self.pipeline = _pipelines[model]
     
     async def do_ocr(self, batch: list[numpy.ndarray]):
 

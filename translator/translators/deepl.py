@@ -52,7 +52,7 @@ class DeepLTranslator(Translator):
                         data = await response.json()
                         
                         return TranslatorResult(
-                            data["translations"][0]["text"],lang_code="ja"
+                            data["translations"][0]["text"],lang_code="en"
                         )
             except:
                 traceback.print_exc()

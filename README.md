@@ -86,8 +86,10 @@ python3 main.py -f ./input                 # or a folder
 ```
 
 Results are written to `output/`. `python3 main.py --help` lists the available
-OCR, translator and drawer backends with their index numbers, which is what
-`-o`, `-t` and `-dr` take.
+OCR, translator, drawer and cleaner backends with their index numbers, which is
+what `-o`, `-t`, `-dr` and `-c` take. Each has a matching `-oa`, `-ta`, `-dra`
+and `-ca` for that backend's settings, e.g. `-ca "dilation=15"` to erase more
+aggressively.
 
 `./run.sh` is a shortcut that creates the venv if needed, installs
 dependencies, and converts everything in `./input`.
@@ -110,7 +112,8 @@ cd ui && npm install && npm run build
 ### API keys
 
 Both translation backends need credentials. The web UI has a field for them per
-backend; `server.py` also reads a `.env` file in the repository root:
+backend; `server.py` and `main.py` both read a `.env` file in the repository
+root:
 
 ```
 DEEPL_AUTH=...

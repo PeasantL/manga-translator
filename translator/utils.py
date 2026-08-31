@@ -27,10 +27,17 @@ async def run_in_thread(func,*args,**kwargs):
         nonlocal func
         nonlocal task
         
-        result = func(*args,**kwargs)
-        
-        if inspect.isawaitable(result):
-            result = asyncio.run(result)
+        try:
+            result = func(*args,**kwargs)
+
+            if inspect.isawaitable(result):
+                result = asyncio.run(result)
+        except BaseException as e:
+            # Without this the future is never resolved and the caller - a tornado
+            # request handler - waits on it forever instead of returning a 500.
+            loop.call_soon_threadsafe(task.set_exception,e)
+            return
+
         loop.call_soon_threadsafe(task.set_result,result)
     
     task_thread = threading.Thread(group=None,daemon=True,target=run)
@@ -39,13 +46,7 @@ async def run_in_thread(func,*args,**kwargs):
 
 def run_in_thread_decorator(func):
     async def wrapper(*args,**kwargs):
-        return await run_in_thread(func,*args,**kwargs) # Comment this out to disable threading
-    
-
-        result = func(*args,**kwargs)
-        if inspect.isawaitable(result):
-                result = await result
-        return result
+        return await run_in_thread(func,*args,**kwargs)
     return wrapper
 
 
@@ -246,17 +247,26 @@ def get_masked_bounds(mask: np.ndarray):
     return x, y, x + w, y + h
 
 
-def get_histogram_for_region(frame: np.ndarray, region_mask=None):
-    masked_frame = cv2.bitwise_and(
-        frame,
-        frame,
-        mask=ensure_gray(
-            region_mask if region_mask is not None else np.full_like(frame, 255)
-        ),
-    )
-    return cv2.calcHist(
-        [masked_frame], [0, 1, 2], None, [256, 256, 256], [0, 256, 0, 256, 0, 256]
-    )
+def get_dominant_color(frame: np.ndarray, region_mask=None):
+    """The most common BGR colour in a frame, as a (b, g, r) tuple.
+
+    This used to go through cv2.calcHist with 256 bins per channel, which allocates
+    67 MB of float32 for every region of every page just to read back one argmax.
+    """
+    pixels = frame.reshape(-1, frame.shape[-1])
+
+    if region_mask is not None:
+        pixels = pixels[ensure_gray(region_mask).reshape(-1) > 0]
+
+    if len(pixels) == 0:
+        return 0, 0, 0
+
+    pixels = pixels.astype(np.uint32)
+    packed = (pixels[:, 0] << 16) | (pixels[:, 1] << 8) | pixels[:, 2]
+    values, counts = np.unique(packed, return_counts=True)
+    dominant = int(values[counts.argmax()])
+
+    return (dominant >> 16) & 255, (dominant >> 8) & 255, dominant & 255
 
 
 def mask_text_and_make_bubble_mask(
@@ -312,15 +322,10 @@ def get_bounds_for_text(frame_mask: np.ndarray):
 def mask_text_for_in_painting(frame: np.ndarray, mask: np.ndarray):
     image = frame.copy()
 
-    hist = get_histogram_for_region(frame, np.full_like(frame, 255, dtype=frame.dtype))
+    dominant = get_dominant_color(frame)
 
-    # Find the bin with the highest frequency
-    max_bin = np.unravel_index(hist.argmax(), hist.shape)
-
-    # Retrieve the corresponding color value
-    is_white = (
-        ((max_bin[2] + max_bin[1] + max_bin[0]) / 3) / 255
-    ) > 0.5  # checks if the dominant color is bright or dark with a 0.5 threshold
+    # checks if the dominant color is bright or dark with a 0.5 threshold
+    is_white = ((sum(dominant) / 3) / 255) > 0.5
 
     if not is_white:
         image = cv2.bitwise_not(image)
@@ -408,29 +413,29 @@ def in_paint_optimized(
             if x1 > bx1:
                 x1 = bx1
 
+            # Round the window out to a multiple of 8 by growing it, never by
+            # shrinking. Trimming x2/y2 pushed up to 7 rows or columns of the
+            # detection box back outside the window, so that strip of text was
+            # never inpainted. x2 > x1 and y2 > y1 always hold here (the window
+            # is clamped to contain the box), so the old else branches were dead.
             overflow_x = (x2 - x1) % 8
-            x1_adjust = 0
             if overflow_x != 0:
-                if x2 > x1:
-                    x2 -= overflow_x
-                else:
-                    x1 += overflow_x
-                    x1_adjust = overflow_x
+                needed = 8 - overflow_x
+                grow_left = min(needed, x1)
+                x1 -= grow_left
+                x2 = min(w, x2 + (needed - grow_left))
 
             overflow_y = (y2 - y1) % 8
-
-            y1_adjust = 0
             if overflow_y != 0:
-                if y2 > y1:
-                    y2 -= overflow_y
-                else:
-                    y1 += overflow_y
-                    y1_adjust = overflow_y
+                needed = 8 - overflow_y
+                grow_top = min(needed, y1)
+                y1 -= grow_top
+                y2 = min(h, y2 + (needed - grow_top))
 
-            bx1 = bx1 - (x1 + x1_adjust)
-            bx2 = bx2 - (x1 + x1_adjust)
-            by1 = by1 - (y1 + y1_adjust)
-            by2 = by2 - (y1 + y1_adjust)
+            bx1 = bx1 - x1
+            bx2 = bx2 - x1
+            by1 = by1 - y1
+            by2 = by2 - y1
 
             region_mask = mask[y1:y2, x1:x2].copy()
 
@@ -517,6 +522,10 @@ def try_merge_hyphenated(text: list[str], max_chars: int):
 
 def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
     total = deque(list(filter(lambda a: len(a.strip()) > 0, text.split(" "))))
+
+    if len(total) == 0:
+        return []
+
     current_word = total.popleft()
     lines = []
     current_line = ""
