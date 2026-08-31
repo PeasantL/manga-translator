@@ -33,6 +33,7 @@ local/*
 trans-test/*
 *.env
 .venv
+.vscode/
 models/*
 input
 output
