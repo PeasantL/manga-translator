@@ -1,5 +1,6 @@
 import cv2
 import os
+import re
 import math
 import torch
 import threading
@@ -577,6 +578,54 @@ def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
             current_word = total.popleft() if len(total) else ""
 
     return try_merge_hyphenated(lines, max_chars)
+
+
+def natural_sort_key(name: str):
+    """Sort key that orders page2 before page10 rather than after it."""
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", name)
+    ]
+
+
+def reading_order_indices(
+    boxes: list[tuple[int, int, int, int]],
+    right_to_left: bool = True,
+    row_overlap: float = 0.5,
+) -> list[int]:
+    """Indices of `boxes` in manga reading order: rows top to bottom, and within a
+    row right to left.
+
+    Boxes are swept top down and grouped into rows. A box opens a new row once it
+    starts more than `row_overlap` of its own height below the bottom of the row
+    being built, which keeps side by side bubbles together without merging bubbles
+    that merely clip each other's corners.
+    """
+    if len(boxes) < 2:
+        return list(range(len(boxes)))
+
+    def across(index):
+        x1, _, x2, _ = boxes[index]
+        return -x2 if right_to_left else x1
+
+    order = []
+    row = []
+    row_bottom = None
+
+    for index in sorted(range(len(boxes)), key=lambda i: (boxes[i][1], across(i))):
+        _, y1, _, y2 = boxes[index]
+
+        if row and y1 > row_bottom - (row_overlap * max(1, y2 - y1)):
+            order.extend(sorted(row, key=across))
+            row = []
+            row_bottom = None
+
+        row.append(index)
+        row_bottom = y2 if row_bottom is None else max(row_bottom, y2)
+
+    order.extend(sorted(row, key=across))
+
+    return order
 
 
 def get_fonts() -> list[tuple[str, str]]:
