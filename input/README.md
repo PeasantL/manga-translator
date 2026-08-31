@@ -4,7 +4,7 @@ Each chapter goes in **its own folder** in here. Images lying loose in this
 folder are skipped, because there would be no name to give their output folder.
 
 ```
-input/my-oneshot/01.png  ->  output/my-oneshot/01.png
+input/my-oneshot/01.png  ->  output/my-oneshot/drawn/01.png
 ```
 
 Then run either of:
@@ -29,10 +29,10 @@ Supported extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tif`,
 `.tiff`. Anything else in here is skipped with a message rather than failing
 the run, which is why this file being here is harmless.
 
-Results go to `../output/<folder name>/`: the finished pages, plus `clean/`
-(the pages with the text erased), `ocr.json` (each bubble's box and source text)
-and `translated.json` (the same with translations). Correct a translation in
-that file by hand and re-run `python3 main.py -f input -s draw` to redraw
-without detecting, reading or translating again.
+Results go to `../output/<folder name>/`: `drawn/` (the finished pages),
+`clean/` (the pages with the text erased), `ocr.json` (each bubble's box and
+source text) and `translated.json` (the same with translations). Correct a
+translation in that file by hand and re-run `python3 main.py -f input -s draw`
+to redraw without detecting, reading or translating again.
 
 Everything you put in this folder is gitignored except this file.
