@@ -15,7 +15,7 @@ The page runs through six stages, in `translator/pipelines.py`:
 | 2 | Segmentation | A second YOLO model masks the text pixels inside them |
 | 3 | Cleaning | [LaMa](https://github.com/advimman/lama) inpaints the text away |
 | 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads the original Japanese |
-| 5 | Translation | DeepL or DeepSeek translates it |
+| 5 | Translation | DeepSeek translates it |
 | 6 | Drawing | PIL lays the translation out and draws it into the cleaned bubble |
 
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
@@ -24,7 +24,7 @@ class and adding one line to the matching `get.py`.
 
 Each stage deliberately carries one good backend rather than a menu. The
 alternatives that used to be here — EasyOCR, Tesseract, DeepFillV2, OpenAI,
-Gemini, Google Cloud, Helsinki-NLP — were either worse on manga specifically,
+Gemini, Google Cloud, Helsinki-NLP, DeepL — were either worse on manga specifically,
 broken, or duplicated something that remains.
 
 ## Install
@@ -111,12 +111,10 @@ cd ui && npm install && npm run build
 
 ### API keys
 
-Both translation backends need credentials. The web UI has a field for them per
-backend; `server.py` and `main.py` both read a `.env` file in the repository
-root:
+The translation backend needs credentials. The web UI has a field for the key;
+`server.py` and `main.py` both read a `.env` file in the repository root:
 
 ```
-DEEPL_AUTH=...
 DEEPSEEK_API_KEY=...
 ```
 
