@@ -952,22 +952,26 @@ def fit_box(
     space_between_lines: int = 2,
     hyphenator: Union[Hyphenator, None] = None,
     max_scale: float = 2.5,
-) -> tuple[tuple[int, int, int, int], bool]:
+) -> tuple[tuple[int, int, int, int], bool, bool]:
     """How much room this text needs, and whether that is more than it was given.
 
     A long translation in a small bubble used to be shrunk until it fit, which
     at some point means unreadable, or dropped entirely when even that failed.
     Instead the box is grown around its own centre until the text fits at the
-    minimum readable size. The caller is told when that happened, so the text
-    can be drawn on a backdrop - it is now over artwork, not over a cleaned
-    bubble.
+    minimum readable size.
+
+    Returns the box, whether it had to grow - the caller draws a backdrop when
+    it did, since the text is now over artwork rather than a cleaned bubble -
+    and whether the text ended up fitting at all. Passing no hyphenator asks for
+    a box that takes the text in whole words, so a caller that would rather grow
+    the box than break a word can ask for that first and see whether it worked.
     """
     page_height, page_width = page_shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box)
     width, height = x2 - x1, y2 - y1
 
     if width <= 0 or height <= 0 or len(text.strip()) == 0:
-        return (x1, y1, x2, y2), False
+        return (x1, y1, x2, y2), False, True
 
     def fits(w: int, h: int) -> bool:
         size, _, _, _ = get_best_font_size(
@@ -984,7 +988,7 @@ def fit_box(
         return size is not None
 
     if fits(width, height):
-        return (x1, y1, x2, y2), False
+        return (x1, y1, x2, y2), False, True
 
     centre_x, centre_y = x1 + (width / 2), y1 + (height / 2)
     grown = (x1, y1, x2, y2)
@@ -1003,7 +1007,7 @@ def fit_box(
         grown = (new_x1, new_y1, new_x1 + new_width, new_y1 + new_height)
 
         if fits(new_width, new_height):
-            return grown, True
+            return grown, True, True
 
         if new_width == page_width and new_height == page_height:
             break
@@ -1011,7 +1015,7 @@ def fit_box(
     # Nothing fit even at the largest allowed size. Hand back the biggest box
     # tried anyway; the drawer draws at the minimum size and overflows it, which
     # is still more use than an empty bubble.
-    return grown, True
+    return grown, True, False
 
 
 class COCO_TO_YOLO_TASK:

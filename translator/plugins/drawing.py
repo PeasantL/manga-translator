@@ -30,55 +30,108 @@ from translator.utils import (
 class HorizontalDrawer(Drawer):
     """Draws text horizontally"""
 
+    HYPHENATE_LAST = "last"
+    HYPHENATE_ALWAYS = "always"
+
+    # How far a box may grow to take the text. Growing further is allowed while
+    # trying to keep words whole, because that is the whole point of asking for
+    # whole words - a wider panel over the art beats a word in three pieces.
+    MAX_GROWTH = 2.5
+    MAX_GROWTH_WHOLE_WORDS = 3.5
+
     def __init__(
         self,
         font_file="fonts/animeace2_reg.ttf",
         max_font_size="30",
         line_spacing="2",
         min_font_size="12",
+        hyphenate="last",
     ) -> None:
         super().__init__()
         self.font_file = font_file
         self.max_font_size = round(float(max_font_size))
         self.line_spacing = round(float(line_spacing))
         self.min_font_size = max(1, round(float(min_font_size)))
+        self.hyphenate = str(hyphenate).strip().lower()
+
+    def avoids_hyphens(self) -> bool:
+        return self.hyphenate != HorizontalDrawer.HYPHENATE_ALWAYS
 
     def box_for(
         self, text: str, box: tuple[int, int, int, int], page_shape: tuple
     ) -> tuple[tuple[int, int, int, int], bool]:
-        """Grow the box until the text fits at the minimum readable size."""
-        return fit_box(
-            drawable_text(text.strip(), self.font_file),
-            box,
-            page_shape,
+        """Grow the box until the text fits at the minimum readable size.
+
+        With hyphenation held back, the first thing tried is a box that takes
+        the text in whole words. Only if no allowed size of box can do that is
+        the word broken - so a translation one letter too wide for its bubble
+        spills out of it instead of being split.
+        """
+        text = drawable_text(text.strip(), self.font_file)
+        hyphenator = Hyphenator("en_US")
+
+        common = dict(
+            box=box,
+            page_shape=page_shape,
             font_file=self.font_file,
             min_font_size=self.min_font_size,
             space_between_lines=self.line_spacing,
-            hyphenator=Hyphenator("en_US"),
         )
+
+        if self.avoids_hyphens():
+            whole, expanded, fitted = fit_box(
+                text,
+                hyphenator=None,
+                max_scale=HorizontalDrawer.MAX_GROWTH_WHOLE_WORDS,
+                **common,
+            )
+
+            if fitted:
+                return whole, expanded
+
+        grown, expanded, _ = fit_box(
+            text,
+            hyphenator=hyphenator,
+            max_scale=HorizontalDrawer.MAX_GROWTH,
+            **common,
+        )
+
+        return grown, expanded
 
     def layout(
         self, text: str, frame_w: int, frame_h: int, hyphenator: Hyphenator
     ) -> tuple[int, list[str], int]:
         """Font size, wrapped lines and line height for one region.
 
-        Falls back to the minimum size when nothing fits: by this point the box
-        has already been grown as far as it is allowed to go, so drawing small
-        and overflowing beats drawing nothing.
-        """
-        font_size, chars_per_line, line_height, _ = get_best_font_size(
-            text,
-            (frame_w, frame_h),
-            font_file=self.font_file,
-            space_between_lines=self.line_spacing,
-            start_size=self.max_font_size,
-            step=1,
-            hyphenator=hyphenator,
-            min_size=self.min_font_size,
-        )
+        Sized without hyphenation first, so the largest size that keeps every
+        word whole wins over a larger one that would break them. box_for has
+        already grown the box to make that possible where it could, so this
+        usually succeeds on the first attempt.
 
-        if font_size:
-            return font_size, wrap_text(text, chars_per_line, hyphenator=hyphenator), line_height
+        Falls back to the minimum size when nothing fits: by that point the box
+        is as large as it is allowed to get, so drawing small and overflowing
+        beats drawing nothing.
+        """
+        attempts = [None, hyphenator] if self.avoids_hyphens() else [hyphenator]
+
+        for attempt in attempts:
+            font_size, chars_per_line, line_height, _ = get_best_font_size(
+                text,
+                (frame_w, frame_h),
+                font_file=self.font_file,
+                space_between_lines=self.line_spacing,
+                start_size=self.max_font_size,
+                step=1,
+                hyphenator=attempt,
+                min_size=self.min_font_size,
+            )
+
+            if font_size:
+                return (
+                    font_size,
+                    wrap_text(text, chars_per_line, hyphenator=attempt),
+                    line_height,
+                )
 
         font_size = self.min_font_size
         char_width, line_height = get_average_font_size(
@@ -254,6 +307,24 @@ class HorizontalDrawer(Drawer):
                 name="Line Spacing",
                 description="Space between lines",
                 default="2",
+            ),
+            PluginSelectArgument(
+                id="hyphenate",
+                name="Break Words",
+                description="Whether a word may be split across lines. Held back "
+                "to a last resort, the box grows past the bubble to keep words "
+                "whole and the text is drawn on white where it overhangs",
+                options=[
+                    PluginSelectArgumentOption(
+                        "Only when nothing else fits",
+                        HorizontalDrawer.HYPHENATE_LAST,
+                    ),
+                    PluginSelectArgumentOption(
+                        "Whenever it fills the line",
+                        HorizontalDrawer.HYPHENATE_ALWAYS,
+                    ),
+                ],
+                default=HorizontalDrawer.HYPHENATE_LAST,
             ),
             PluginArgument(
                 id="min_font_size",
