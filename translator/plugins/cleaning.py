@@ -1,5 +1,5 @@
 from numpy import ndarray
-from translator.core.plugin import Cleaner, PluginArgument, PluginTextArgument
+from translator.plugins.base import Cleaner, PluginArgument, PluginTextArgument
 from translator.utils import in_paint_optimized, cv2_to_pil, pil_to_cv2
 
 

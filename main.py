@@ -5,11 +5,13 @@ import argparse
 import ast
 import asyncio
 import os
-from translator.pipelines import FullConversion, draw_page, align_translations
-from translator.translators.get import get_translators
-from translator.ocr.get import get_ocr
-from translator.drawers.get import get_drawers
-from translator.cleaners.get import get_cleaners
+from translator.pipeline import FullConversion, draw_page, align_translations
+from translator.plugins import (
+    get_translators,
+    get_ocr,
+    get_drawers,
+    get_cleaners,
+)
 from translator.chapter import (
     find_chapters,
     Chapter,
@@ -18,7 +20,7 @@ from translator.chapter import (
     Region,
     CLEAN_DIR,
 )
-from translator.core.plugin import OcrResult, TranslatorResult
+from translator.plugins import OcrResult, TranslatorResult
 from translator.utils import read_image, write_image
 
 

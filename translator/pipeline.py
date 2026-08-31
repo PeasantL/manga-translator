@@ -17,9 +17,17 @@ import traceback
 import torch
 import asyncio
 from typing import Union
-from translator.core.plugin import Drawable, Translator, Ocr, Drawer, Cleaner, TranslatorResult, OcrResult
-from translator.cleaners.lama import LamaCleaner
-from translator.drawers.horizontal import HorizontalDrawer
+from translator.plugins import (
+    Drawable,
+    Translator,
+    Ocr,
+    Drawer,
+    Cleaner,
+    TranslatorResult,
+    OcrResult,
+    LamaCleaner,
+    HorizontalDrawer,
+)
 
 
 # server.py builds a FullConversion per request, which reloaded every model each

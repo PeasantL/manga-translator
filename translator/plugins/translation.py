@@ -2,7 +2,7 @@ import os
 import re
 import sys
 from translator.utils import get_languages
-from translator.core.plugin import (
+from translator.plugins.base import (
     Translator,
     TranslatorResult,
     OcrResult,
@@ -24,10 +24,10 @@ SYSTEM_PROMPT = (
     "names, and sentences that continue from one bubble into the next. Keep names "
     "and terms consistent across the chapter.\n\n"
     "Make ONLY one pass over the lines while thinking. Read them in order, settle each "
-    "line as you reach it, and move on. Do NOT go back over lines you have already "
-    "settled, and do not draft the whole translation twice - the reasoning shares "
+    "line as you reach it, and move on. NEVER go back over lines you have already "
+    "settled. DO NOT draft the whole translation twice - the reasoning shares "
     "a token budget with the answer, and a second pass spends what the answer "
-    "needs. DO NOT OVERTHINK\n\n"
+    "needs. Think only once, then answer.\n\n"
     "Reply with exactly one line per input line, formatted as `<number>. "
     "<translation>`, in the same order and numbered the same way. Output nothing "
     "else: no blank lines, no commentary, no notes, no romanisation, no quotes "
@@ -360,4 +360,27 @@ class DeepSeekTranslator(Translator):
                 "context",
                 default="200",
             ),
+        ]
+
+
+class DebugTranslator(Translator):
+    """Writes the specified text"""
+
+    def __init__(self, text="") -> None:
+        super().__init__()
+        self.to_write = text
+
+    async def translate(self, batch: list[OcrResult]):
+        return [TranslatorResult(self.to_write) for _ in batch]
+
+    @staticmethod
+    def get_name() -> str:
+        return "Custom Text"
+
+    @staticmethod
+    def get_arguments() -> list[PluginArgument]:
+        return [
+            PluginTextArgument(
+                id="text", name="Debug Text", description="What to write"
+            )
         ]
