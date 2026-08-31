@@ -37,3 +37,7 @@ pycountry>=22.3.5,<23.0
 # (apt install python3-tk). Capped below 5.0 because 5.x changed the API and
 # added a license-key prompt; the code falls back to writing a PNG without it.
 pysimplegui>=4.60.5,<5.0
+
+# Font handling. Read to find out which characters a font can actually draw,
+# so a symbol it lacks is drawn from one that has it instead of as an empty box.
+fonttools>=4.40.0,<5.0

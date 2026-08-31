@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from PIL import ImageFont, ImageDraw
+from PIL import ImageDraw
 from numpy import ndarray
 from hyphen import Hyphenator
 import asyncio
@@ -17,6 +17,8 @@ from translator.utils import (
     pil_to_cv2,
     wrap_text,
     get_fonts,
+    drawable_text,
+    font_runs,
 )
 
 
@@ -41,7 +43,12 @@ class HorizontalDrawer(Drawer):
         self, item: Drawable
     ) -> tuple[ndarray,ndarray]:
         item_mask = np.zeros_like(item.frame)
-        if len(item.translation.text.strip()) <= 0:
+
+        # Characters no font on disk can draw are dropped here, before sizing, so
+        # that the layout is measured on what actually gets drawn.
+        text = drawable_text(item.translation.text.strip(), self.font_file)
+
+        if len(text) <= 0:
             return (item.frame,item_mask)
 
         frame_h, frame_w, _ = item.frame.shape
@@ -49,7 +56,7 @@ class HorizontalDrawer(Drawer):
         hyphenator = Hyphenator("en_US")
 
         font_size, chars_per_line, line_height, iters = get_best_font_size(
-            item.translation.text,
+            text,
             (frame_w, frame_h),
             font_file=self.font_file,
             space_between_lines=self.line_spacing,
@@ -61,12 +68,7 @@ class HorizontalDrawer(Drawer):
         if not font_size:
             return (item.frame,item_mask)
 
-        font = ImageFont.truetype(self.font_file, font_size)
-
-        draw_x = 0
-        draw_y = 0
-
-        wrapped = wrap_text(item.translation.text, chars_per_line, hyphenator=hyphenator)
+        wrapped = wrap_text(text, chars_per_line, hyphenator=hyphenator)
 
         frame_as_pil = cv2_to_pil(item.frame)
         
@@ -81,57 +83,51 @@ class HorizontalDrawer(Drawer):
 
         for line_no in range(len(wrapped)):
             line = wrapped[line_no]
-            x, y, w, h = font.getbbox(line)
 
-            image_draw.text(
-                (
-                    draw_x + abs(((frame_w - w) / 2)),
-                    draw_y
-                    + self.line_spacing
-                    + (
-                        (
-                            frame_h
-                            - (
-                                (len(wrapped) * line_height)
-                                + (len(wrapped) * self.line_spacing)
-                            )
+            # A line is usually one run in the chosen font. It is split only
+            # where that font has no glyph, so a symbol it lacks is drawn from a
+            # font that has it instead of coming out as an empty box.
+            runs = font_runs(line, self.font_file, font_size)
+            line_width = sum(font.getlength(part) for part, font in runs)
+
+            draw_y = (
+                self.line_spacing
+                + (
+                    (
+                        frame_h
+                        - (
+                            (len(wrapped) * line_height)
+                            + (len(wrapped) * self.line_spacing)
                         )
-                        / 2
                     )
-                    + (line_no * line_height)
-                    + (self.line_spacing * line_no),
-                ),
-                str(line),
-                fill=(*color_fg,255),
-                font=font,
-                stroke_width=stroke_width,
-                stroke_fill=(*color_bg,255) if stroke_width > 0 else None
+                    / 2
+                )
+                + (line_no * line_height)
+                + (self.line_spacing * line_no)
             )
 
-            mask_draw.text(
-                (
-                    draw_x + abs(((frame_w - w) / 2)),
-                    draw_y
-                    + self.line_spacing
-                    + (
-                        (
-                            frame_h
-                            - (
-                                (len(wrapped) * line_height)
-                                + (len(wrapped) * self.line_spacing)
-                            )
-                        )
-                        / 2
-                    )
-                    + (line_no * line_height)
-                    + (self.line_spacing * line_no),
-                ),
-                str(line),
-                fill=(255, 255, 255, 255),
-                font=font,
-                stroke_width=stroke_width,
-                stroke_fill=(255, 255, 255) if stroke_width > 0 else None
-            )
+            draw_x = abs((frame_w - line_width) / 2)
+
+            for part, font in runs:
+                image_draw.text(
+                    (draw_x, draw_y),
+                    part,
+                    fill=(*color_fg,255),
+                    font=font,
+                    stroke_width=stroke_width,
+                    stroke_fill=(*color_bg,255) if stroke_width > 0 else None
+                )
+
+                mask_draw.text(
+                    (draw_x, draw_y),
+                    part,
+                    fill=(255, 255, 255, 255),
+                    font=font,
+                    stroke_width=stroke_width,
+                    stroke_fill=(255, 255, 255) if stroke_width > 0 else None
+                )
+
+                draw_x += font.getlength(part)
 
         mask_cv2 = cv2.cvtColor(pil_to_cv2(mask_as_pil),cv2.COLOR_BGR2GRAY)
 
