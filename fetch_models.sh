@@ -6,14 +6,14 @@
 # the upstream project's release assets.
 #
 # Usage:
-#   ./scripts/fetch_models.sh          # the two required models (~258 MB)
-#   ./scripts/fetch_models.sh --force  # re-download files that already exist
+#   ./fetch_models.sh          # the two required models (~258 MB)
+#   ./fetch_models.sh --force  # re-download files that already exist
 #
 # Override the source with MODELS_BASE_URL, or the destination with MODELS_DIR.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODELS_DIR="${MODELS_DIR:-$REPO_ROOT/models}"
 MODELS_RELEASE="${MODELS_RELEASE:-2024.01.31}"

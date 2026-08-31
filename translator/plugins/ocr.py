@@ -4,7 +4,7 @@ import re
 import jaconv
 from transformers import pipeline
 from translator.utils import cv2_to_pil, get_torch_device
-from translator.core.plugin import Ocr, OcrResult
+from translator.plugins.base import Ocr, OcrResult
 
 
 # Same reasoning as the cleaner: one loaded model per name, not one per request.
@@ -41,3 +41,17 @@ class JapaneseOcr(Ocr):
     @staticmethod
     def get_name() -> str:
         return "Japanese Ocr"
+
+
+class NoOcr(Ocr):
+    """Skips OCR. Use it to clean a page without translating it"""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    async def do_ocr(self, batch: list[numpy.ndarray]):
+        return [OcrResult("", "") for _ in batch]
+
+    @staticmethod
+    def get_name() -> str:
+        return "No Ocr"

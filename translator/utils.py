@@ -835,7 +835,7 @@ def require_model_file(path: str) -> str:
         raise FileNotFoundError(
             f"Missing model weights: {os.path.abspath(path)}\n"
             "Model files are not checked into the repository. Download them with:\n"
-            "    ./scripts/fetch_models.sh"
+            "    ./fetch_models.sh"
         )
 
     return path

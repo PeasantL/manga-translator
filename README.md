@@ -7,8 +7,8 @@ Forked from [TareHimself/manga-translator](https://github.com/TareHimself/manga-
 
 ## How it works
 
-A folder is treated as one chapter. It runs through six stages, in
-`translator/pipelines.py`:
+A folder is one chapter. It runs through six stages, in
+`translator/pipeline.py`:
 
 | # | Stage | What it does |
 |---|-------|--------------|
@@ -96,7 +96,7 @@ pip install -r requirements.txt
 The weights are not in the repository. Download them into `models/`:
 
 ```bash
-./scripts/fetch_models.sh
+./fetch_models.sh
 ```
 
 That fetches the two required models (~258 MB):
@@ -115,38 +115,38 @@ Commands are run from the repository root.
 
 ### CLI
 
-`-f` takes the folder that holds your chapters. Each folder inside it is one
-chapter, and gets a folder of the same name under `output/`:
+`-f` takes chapters. Each folder you pass is one chapter, and gets a folder of
+the same name under `output/`:
 
 ```
-input/                        output/
-    my-oneshot/                   my-oneshot/
-        01.png                        clean/01.png     cleaned, no text
-        02.png                        clean/02.png
-                                      drawn/01.png     finished pages
-                                      drawn/02.png
-                                      ocr.json         boxes and source text
-                                      translated.json  the same, translated
+input/my-oneshot/             output/my-oneshot/
+    01.png                        clean/01.png     cleaned, no text
+    02.png                        clean/02.png
+                                  drawn/01.png     finished pages
+                                  drawn/02.png
+                                  ocr.json         boxes and source text
+                                  translated.json  the same, translated
 ```
 
 ```bash
-python3 main.py -f input                   # every chapter, every stage
-python3 main.py -f input -s ocr            # or one stage at a time
-python3 main.py -f input -s translate
-python3 main.py -f input -s draw
+python3 main.py -f input/my-oneshot                   # every stage
+python3 main.py -f input/my-oneshot -s ocr            # or one stage at a time
+python3 main.py -f input/my-oneshot -s translate
+python3 main.py -f input/my-oneshot -s draw
+python3 main.py -f input/one input/two                # several chapters at once
 ```
 
-A chapter needs a folder. Images lying loose in the input root are skipped,
-since there would be no name to give their output folder. Pages are sorted
-naturally, so `page2` comes before `page10` — name them so they sort into
-reading order, because that order is what the translator sees. `python3 main.py --help` lists the available
+Pass the chapter, not the folder your chapters live in — pointing `-f` at
+`input` would make `input` itself the chapter. Pages are sorted naturally, so
+`page2` comes before `page10` — name them so they sort into reading order,
+because that order is what the translator sees. `python3 main.py --help` lists the available
 OCR, translator, drawer and cleaner backends with their index numbers, which is
 what `-o`, `-t`, `-dr` and `-c` take. Each has a matching `-oa`, `-ta`, `-dra`
 and `-ca` for that backend's settings, e.g. `-ca "dilation=15"` to erase more
 aggressively.
 
 `./run.sh` is a shortcut that creates the venv if needed, installs
-dependencies, and converts everything in `./input`.
+dependencies, and converts every chapter folder in `./input`.
 
 ### Web UI
 
@@ -186,15 +186,36 @@ project if you want to retrain.
 
 ## Examples
 
-`examples/raw` holds six sample pages. Pointing `-f` at `examples` treats
-`raw` as a chapter:
+`examples/raw` holds six sample pages, which is one chapter:
 
 ```bash
-python3 main.py -f examples
+python3 main.py -f examples/raw
 ```
 
 The converted pages are written to `output/raw/drawn/`. They are not checked in, since
 the result depends on which model and target language you translate with.
+
+## Layout
+
+```
+main.py                     the CLI
+server.py                   the web UI's backend
+run.sh                      venv, dependencies, then every chapter in input/
+fetch_models.sh             downloads the YOLO weights into models/
+translator/
+    chapter.py              what a chapter is, and the JSON passed between stages
+    pipeline.py             the six stages, wired together
+    utils.py                image, text layout and colour helpers
+    plugins/
+        base.py             what a backend has to implement
+        __init__.py         the registry each stage's backends are listed in
+        cleaning.py         stage 3
+        ocr.py              stage 4
+        translation.py      stage 5
+        drawing.py          stage 6
+ui/                         the web UI, React
+input/  output/  fonts/  models/  examples/
+```
 
 ## Glossary
 

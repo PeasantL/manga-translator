@@ -6,7 +6,7 @@ from PIL import ImageDraw
 from numpy import ndarray
 from hyphen import Hyphenator
 import asyncio
-from translator.core.plugin import (
+from translator.plugins.base import (
     Drawable,
     Drawer,
     PluginArgument,
