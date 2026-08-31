@@ -745,3 +745,41 @@ def resize_and_pad(cv2_image: np.ndarray,target_size: tuple[int,int],extra_paddi
     return cv2.copyMakeBorder(
             image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=pad_color
         )
+
+
+def read_image(path: str) -> Union[np.ndarray, None]:
+    """cv2.imread that works with non ASCII paths.
+
+    On Windows cv2.imread hands the path to the ANSI file API, so a folder named
+    with anything outside the local code page - a chapter title with a star or a
+    Japanese character in it - simply fails to open. Reading the bytes ourselves
+    and decoding them in memory sidesteps the path entirely.
+    """
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+
+    if data.size == 0:
+        return None
+
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def write_image(path: str, frame: np.ndarray) -> bool:
+    """cv2.imwrite that works with non ASCII paths, and that says when it failed.
+
+    cv2.imwrite returns False rather than raising, so a whole chapter could be
+    reported as written while nothing reached the disk.
+    """
+    success, encoded = cv2.imencode(os.path.splitext(path)[1] or ".png", frame)
+
+    if not success:
+        return False
+
+    try:
+        encoded.tofile(path)
+    except OSError:
+        return False
+
+    return True

@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 load_dotenv()
 import argparse
 import ast
-import cv2
 import asyncio
 import os
 from translator.pipelines import FullConversion, draw_page, align_translations
@@ -13,6 +12,7 @@ from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
 from translator.chapter import find_chapters, Chapter, ChapterDocument, Page, Region, CLEAN_DIR
 from translator.core.plugin import OcrResult, TranslatorResult
+from translator.utils import read_image, write_image
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -69,7 +69,7 @@ def load_pages(chapter: Chapter) -> list[tuple[str, "object"]]:
     loaded = []
 
     for path in chapter.pages:
-        frame = cv2.imread(path)
+        frame = read_image(path)
 
         if frame is None:
             print(f"Skipping {path}, could not be read as an image")
@@ -118,7 +118,10 @@ async def stage_ocr(chapter: Chapter, args):
         clean_name = os.path.splitext(name)[0] + ".png"
         clean_relative = f"{CLEAN_DIR}/{clean_name}"
 
-        cv2.imwrite(os.path.join(chapter.output_dir, CLEAN_DIR, clean_name), page.frame)
+        clean_path = os.path.join(chapter.output_dir, CLEAN_DIR, clean_name)
+
+        if not write_image(clean_path, page.frame):
+            print(f"{chapter.name}: could not write {clean_path}")
 
         regions = []
         for box in page.draw_boxes:
@@ -199,7 +202,7 @@ async def stage_draw(chapter: Chapter, args):
 
     for page in document.pages:
         clean_path = os.path.join(chapter.output_dir, page.clean)
-        frame = cv2.imread(clean_path)
+        frame = read_image(clean_path)
 
         if frame is None:
             print(f"{chapter.name}: missing cleaned page {clean_path}, skipping")
@@ -215,8 +218,10 @@ async def stage_draw(chapter: Chapter, args):
             drawer,
         )
 
-        cv2.imwrite(os.path.join(chapter.output_dir, page.name), drawn)
-        written += 1
+        if write_image(os.path.join(chapter.output_dir, page.name), drawn):
+            written += 1
+        else:
+            print(f"{chapter.name}: could not write {page.name}")
 
     print(f"{chapter.name}: wrote {written} pages to {chapter.output_dir}/")
 
