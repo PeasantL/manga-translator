@@ -136,7 +136,10 @@ class Drawer(BasePlugin):
     async def draw(
         self, batch: list[Drawable]
     ) -> list[tuple[np.ndarray,np.ndarray]]:
-        return [x.frame for x in batch]
+        # An empty mask means "draw nothing", which is what this no-op base does.
+        return [
+            (x.frame, np.zeros(x.frame.shape[:2], dtype=np.uint8)) for x in batch
+        ]
 
     async def __call__(
         self, batch: list[Drawable]
@@ -154,7 +157,7 @@ class Cleaner(BasePlugin):
         mask: np.ndarray,
         detection_results: list[tuple[tuple[int, int, int, int], str, float]] = [],
     ) -> tuple[np.ndarray, np.ndarray]:
-        return frame
+        return frame, mask
 
     async def __call__(
         self,
