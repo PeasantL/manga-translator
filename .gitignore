@@ -35,5 +35,9 @@ trans-test/*
 .venv
 .vscode/
 models/*
-input
-output
+# Working folders. The folders themselves are tracked so a fresh clone has
+# somewhere to put pages; their contents are not.
+input/*
+!input/README.md
+output/*
+!output/.gitkeep
