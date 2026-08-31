@@ -80,7 +80,7 @@ class DeepSeekTranslator(Translator):
         max_lines="200",
         stream="true",
         reasoning_effort="low",
-        max_tokens="8192",
+        max_tokens="16384",
     ) -> None:
         super().__init__()
         from openai import AsyncOpenAI
@@ -374,7 +374,7 @@ class DeepSeekTranslator(Translator):
                 name="Max Output Tokens",
                 description="Cap on the reply. Reasoning counts towards this, so "
                 "raise it if long chapters come back truncated",
-                default="8192",
+                default="16384",
             ),
             PluginTextArgument(
                 id="max_lines",
