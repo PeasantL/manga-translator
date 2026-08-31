@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from translator.utils import get_languages
 from translator.core.plugin import (
     Translator,
@@ -31,6 +32,18 @@ SYSTEM_PROMPT = (
 )
 
 
+def console_safe(text: str) -> str:
+    """Make model output printable on whatever encoding stdout happens to have.
+
+    Windows consoles default to cp1252, which cannot encode Japanese. The
+    reasoning stream quotes the source lines back, so printing it raw crashes the
+    run on exactly the input this tool exists for.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+
+    return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+
 class DeepSeekTranslator(Translator):
     """Translates a whole chapter at once using the DeepSeek API"""
 
@@ -50,6 +63,7 @@ class DeepSeekTranslator(Translator):
         model=MODELS[0][1],
         temp="1.3",
         max_lines="200",
+        stream="true",
     ) -> None:
         super().__init__()
         from openai import AsyncOpenAI
@@ -67,6 +81,7 @@ class DeepSeekTranslator(Translator):
         self.model = model
         self.temp = float(temp)
         self.max_lines = max(1, int(max_lines))
+        self.stream = str(stream).strip().lower() not in ("false", "0", "no", "off")
 
     async def translate(self, batch: list[OcrResult]):
         if self.client is None:
@@ -154,16 +169,75 @@ class DeepSeekTranslator(Translator):
         return translated
 
     async def ask(self, content: str) -> str:
-        result = await self.client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ]
+
+        if not self.stream:
+            result = await self.client.chat.completions.create(
+                model=self.model, temperature=self.temp, messages=messages
+            )
+
+            return result.choices[0].message.content or ""
+
+        return await self.ask_streaming(messages)
+
+    async def ask_streaming(self, messages: list[dict]) -> str:
+        """Stream the reply, showing the reasoning and the lines as they arrive.
+
+        Only deepseek-reasoner produces reasoning_content; deepseek-chat returns
+        the translation with no chain of thought, so nothing is shown under
+        "thinking" for it. The translated lines stream either way.
+        """
+        stream = await self.client.chat.completions.create(
             model=self.model,
             temperature=self.temp,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
+            messages=messages,
+            stream=True,
         )
 
-        return result.choices[0].message.content or ""
+        answer = []
+        pending = ""
+        thinking = False
+
+        async for chunk in stream:
+            if len(chunk.choices) == 0:
+                continue
+
+            delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning_content", None)
+
+            if reasoning:
+                if not thinking:
+                    print("  thinking: ", end="", flush=True)
+                    thinking = True
+
+                print(console_safe(reasoning), end="", flush=True)
+
+            if delta.content:
+                if thinking:
+                    print(flush=True)
+                    thinking = False
+
+                answer.append(delta.content)
+                pending += delta.content
+
+                # Emit whole lines only, so a translation is never shown split
+                # across two prints.
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+
+                    if len(line.strip()) > 0:
+                        print(f"  {console_safe(line.strip())}")
+
+        if thinking:
+            print(flush=True)
+
+        if len(pending.strip()) > 0:
+            print(f"  {console_safe(pending.strip())}")
+
+        return "".join(answer)
 
     @staticmethod
     def parse_numbered(reply: str) -> dict[int, str]:
@@ -227,6 +301,14 @@ class DeepSeekTranslator(Translator):
                 name="Temperature",
                 description="Sampling temperature",
                 default="1.3",
+            ),
+            PluginTextArgument(
+                id="stream",
+                name="Stream",
+                description="Show the reply as it arrives. Only deepseek-reasoner "
+                "has a chain of thought to show; deepseek-chat streams the "
+                "translated lines only",
+                default="true",
             ),
             PluginTextArgument(
                 id="max_lines",
