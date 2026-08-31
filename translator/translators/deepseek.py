@@ -32,6 +32,13 @@ SYSTEM_PROMPT = (
 )
 
 
+SINGLE_PROMPT = (
+    "You translate manga dialogue. Reply with the translation only: no numbering, "
+    "no commentary, no notes, no romanisation, no quotes, and no alternative "
+    "renderings."
+)
+
+
 def console_safe(text: str) -> str:
     """Make model output printable on whatever encoding stdout happens to have.
 
@@ -52,9 +59,12 @@ class DeepSeekTranslator(Translator):
     BASE_URL = "https://api.deepseek.com"
 
     MODELS = [
-        ("DeepSeek Chat", "deepseek-chat"),
-        ("DeepSeek Reasoner", "deepseek-reasoner"),
+        ("DeepSeek V4 Pro", "deepseek-v4-pro"),
+        ("DeepSeek V4 Flash", "deepseek-v4-flash"),
     ]
+
+    # Both v4 models reason, and both take reasoning_effort.
+    REASONING_EFFORTS = ["high", "medium", "low"]
 
     def __init__(
         self,
@@ -64,6 +74,8 @@ class DeepSeekTranslator(Translator):
         temp="1.3",
         max_lines="200",
         stream="true",
+        reasoning_effort="high",
+        max_tokens="8192",
     ) -> None:
         super().__init__()
         from openai import AsyncOpenAI
@@ -82,6 +94,8 @@ class DeepSeekTranslator(Translator):
         self.temp = float(temp)
         self.max_lines = max(1, int(max_lines))
         self.stream = str(stream).strip().lower() not in ("false", "0", "no", "off")
+        self.reasoning_effort = str(reasoning_effort).strip().lower()
+        self.max_tokens = int(max_tokens)
 
     async def translate(self, batch: list[OcrResult]):
         if self.client is None:
@@ -161,22 +175,32 @@ class DeepSeekTranslator(Translator):
                 source = chunk[position - 1][1]
                 single = await self.ask(
                     f"Translate from {source_lang.upper()} to "
-                    f"{self.target_lang.upper()}. Reply with the translation only.\n"
-                    f"{source.text}"
+                    f"{self.target_lang.upper()}.\n{source.text}",
+                    system=SINGLE_PROMPT,
                 )
-                translated[position - 1] = single.strip()
+                translated[position - 1] = self.strip_numbering(single.strip())
 
         return translated
 
-    async def ask(self, content: str) -> str:
+    def request_arguments(self, messages: list[dict]) -> dict:
+        """The keywords both the streaming and non-streaming calls send."""
+        return {
+            "model": self.model,
+            "temperature": self.temp,
+            "messages": messages,
+            "reasoning_effort": self.reasoning_effort,
+            "max_tokens": self.max_tokens,
+        }
+
+    async def ask(self, content: str, system: str = SYSTEM_PROMPT) -> str:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": content},
         ]
 
         if not self.stream:
             result = await self.client.chat.completions.create(
-                model=self.model, temperature=self.temp, messages=messages
+                **self.request_arguments(messages)
             )
 
             return result.choices[0].message.content or ""
@@ -186,25 +210,25 @@ class DeepSeekTranslator(Translator):
     async def ask_streaming(self, messages: list[dict]) -> str:
         """Stream the reply, showing the reasoning and the lines as they arrive.
 
-        Only deepseek-reasoner produces reasoning_content; deepseek-chat returns
-        the translation with no chain of thought, so nothing is shown under
-        "thinking" for it. The translated lines stream either way.
+        The v4 models return their chain of thought in reasoning_content, which is
+        shown as it arrives; the translated lines follow. reasoning_content is
+        read with getattr so a model or endpoint that does not send it is not an
+        error, it just shows nothing under "thinking".
         """
         stream = await self.client.chat.completions.create(
-            model=self.model,
-            temperature=self.temp,
-            messages=messages,
-            stream=True,
+            **self.request_arguments(messages), stream=True
         )
 
         answer = []
         pending = ""
         thinking = False
+        finish_reason = None
 
         async for chunk in stream:
             if len(chunk.choices) == 0:
                 continue
 
+            finish_reason = chunk.choices[0].finish_reason or finish_reason
             delta = chunk.choices[0].delta
             reasoning = getattr(delta, "reasoning_content", None)
 
@@ -237,7 +261,26 @@ class DeepSeekTranslator(Translator):
         if len(pending.strip()) > 0:
             print(f"  {console_safe(pending.strip())}")
 
+        if finish_reason == "length":
+            # Reasoning tokens count towards max_tokens, so a high reasoning
+            # effort can eat the whole budget before any translation is written.
+            print(
+                f"  reply hit the {self.max_tokens} token cap and was cut off. "
+                "Raise max_tokens, or lower reasoning_effort or max_lines"
+            )
+
         return "".join(answer)
+
+    @staticmethod
+    def strip_numbering(text: str) -> str:
+        """Drop a leading "1. " from a single line reply.
+
+        The model sometimes numbers a one line answer anyway, and left in, that
+        number gets drawn into the bubble.
+        """
+        match = NUMBERED_LINE.match(text)
+
+        return match.group(2).strip() if match is not None else text
 
     @staticmethod
     def parse_numbered(reply: str) -> dict[int, str]:
@@ -305,10 +348,26 @@ class DeepSeekTranslator(Translator):
             PluginTextArgument(
                 id="stream",
                 name="Stream",
-                description="Show the reply as it arrives. Only deepseek-reasoner "
-                "has a chain of thought to show; deepseek-chat streams the "
-                "translated lines only",
+                description="Show the reasoning and the translated lines as they "
+                "arrive",
                 default="true",
+            ),
+            PluginSelectArgument(
+                id="reasoning_effort",
+                name="Reasoning Effort",
+                description="How much thinking the model does before answering",
+                options=[
+                    PluginSelectArgumentOption(e.capitalize(), e)
+                    for e in DeepSeekTranslator.REASONING_EFFORTS
+                ],
+                default="high",
+            ),
+            PluginTextArgument(
+                id="max_tokens",
+                name="Max Output Tokens",
+                description="Cap on the reply. Reasoning counts towards this, so "
+                "raise it if long chapters come back truncated",
+                default="8192",
             ),
             PluginTextArgument(
                 id="max_lines",
