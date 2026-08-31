@@ -8,8 +8,11 @@ python-dotenv>=1.0.0,<2.0
 tornado>=6.3.3,<7.0
 
 # Torch stack. Declared explicitly rather than relied on as an ultralytics
-# transitive. For CUDA builds install these first from the PyTorch index, e.g.
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# transitive. Plain `pip install torch` gets the CPU only wheel, and every stage
+# then runs on the CPU however good the card is. For CUDA, install these first
+# from the PyTorch index, picking the cuXXX that has the torch version you want:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# Check with: python -c "import torch; print(torch.cuda.is_available())"
 torch>=2.0.0,<3.0
 torchvision>=0.15.0,<1.0
 
