@@ -14,6 +14,7 @@ folder so that its results have a folder of the same name to go into:
                                           02.png
 """
 
+import json
 import os
 
 from translator.utils import natural_sort_key
@@ -117,3 +118,150 @@ def find_chapters(paths: list[str], output_root: str = "output") -> list[Chapter
             chapters.append(Chapter(name, pages, os.path.join(output_root, name)))
 
     return chapters
+
+
+class Region:
+    """One bubble: where it is, what it said, and what that becomes.
+
+    `box` is the area the translation is drawn into, in the page's pixel
+    coordinates, which is all stage 6 needs to place text without redetecting.
+    """
+
+    def __init__(
+        self,
+        box: list[int],
+        text: str = "",
+        language: str = "",
+        translation: str = "",
+    ) -> None:
+        self.box = [int(v) for v in box]
+        self.text = text
+        self.language = language
+        self.translation = translation
+
+    def to_dict(self) -> dict:
+        return {
+            "box": self.box,
+            "text": self.text,
+            "language": self.language,
+            "translation": self.translation,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Region":
+        return cls(
+            box=data["box"],
+            text=data.get("text", ""),
+            language=data.get("language", ""),
+            translation=data.get("translation", ""),
+        )
+
+
+class Page:
+    """One page of a chapter. `clean` is relative to the chapter's output folder
+    so the folder can be moved or handed to someone else whole."""
+
+    def __init__(
+        self,
+        name: str,
+        source: str,
+        clean: str,
+        width: int,
+        height: int,
+        regions: list[Region],
+    ) -> None:
+        self.name = name
+        self.source = source
+        self.clean = clean
+        self.width = width
+        self.height = height
+        self.regions = regions
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "source": self.source,
+            "clean": self.clean,
+            "width": self.width,
+            "height": self.height,
+            "regions": [r.to_dict() for r in self.regions],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Page":
+        return cls(
+            name=data["name"],
+            source=data.get("source", ""),
+            clean=data["clean"],
+            width=data.get("width", 0),
+            height=data.get("height", 0),
+            regions=[Region.from_dict(r) for r in data.get("regions", [])],
+        )
+
+
+class ChapterDocument:
+    """What one stage hands the next.
+
+    Pages are in reading order and so are the regions within each page, so
+    flattening them gives the chapter's dialogue in sequence - which is the order
+    the translator needs to make sense of it.
+    """
+
+    SCHEMA = 1
+
+    def __init__(
+        self,
+        chapter: str,
+        source_language: str = "",
+        target_language: str = "",
+        pages: list[Page] = None,
+    ) -> None:
+        self.chapter = chapter
+        self.source_language = source_language
+        self.target_language = target_language
+        self.pages = pages if pages is not None else []
+
+    def regions(self) -> list[Region]:
+        return [region for page in self.pages for region in page.regions]
+
+    def to_dict(self) -> dict:
+        return {
+            "schema": ChapterDocument.SCHEMA,
+            "chapter": self.chapter,
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "pages": [p.to_dict() for p in self.pages],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ChapterDocument":
+        schema = data.get("schema")
+
+        if schema != ChapterDocument.SCHEMA:
+            raise ValueError(
+                f"Unsupported schema {schema}, this build writes and reads "
+                f"schema {ChapterDocument.SCHEMA}"
+            )
+
+        return cls(
+            chapter=data.get("chapter", ""),
+            source_language=data.get("source_language", ""),
+            target_language=data.get("target_language", ""),
+            pages=[Page.from_dict(p) for p in data.get("pages", [])],
+        )
+
+    def save(self, path: str) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(self.to_dict(), file, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "ChapterDocument":
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"{path} is missing. Run the earlier stage first."
+            )
+
+        with open(path, "r", encoding="utf-8") as file:
+            return cls.from_dict(json.load(file))
