@@ -13,6 +13,7 @@ from typing import Union, Callable
 from PIL import Image, ImageFont
 from hyphen import Hyphenator
 from collections import deque
+from functools import lru_cache
 import traceback
 
 
@@ -626,6 +627,103 @@ def reading_order_indices(
     order.extend(sorted(row, key=across))
 
     return order
+
+
+FALLBACK_FONTS = (
+    "NotoSansJP-Regular.ttf",
+    "msmincho.ttf",
+    "reiko.ttf",
+)
+
+
+@lru_cache(maxsize=32)
+def font_charset(font_file: str) -> frozenset:
+    """The code points a font can actually draw.
+
+    Pillow has no fallback: a character the font has no glyph for is drawn as
+    .notdef, the empty box readers see as []. Comic fonts carry no symbols, so a
+    heart in a translation comes out as a box. Reading the cmap is the only way
+    to know before drawing.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+
+        with TTFont(font_file, fontNumber=0, lazy=True) as font:
+            return frozenset(font.getBestCmap().keys())
+    except Exception:
+        # Better to assume the font covers everything than to drop text because
+        # its cmap could not be parsed.
+        return frozenset()
+
+
+def font_for_char(char: str, font_file: str) -> Union[str, None]:
+    """Which font file to draw one character with, or None if nothing can.
+
+    The chosen font is preferred whenever it has the glyph, so ordinary text is
+    never split up. Only what it lacks goes looking through the fallbacks.
+    """
+    code = ord(char)
+    charset = font_charset(font_file)
+
+    if len(charset) == 0 or code in charset:
+        return font_file
+
+    for name in FALLBACK_FONTS:
+        candidate = os.path.abspath(os.path.join("./fonts", name))
+
+        if os.path.isfile(candidate) and code in font_charset(candidate):
+            return candidate
+
+    return None
+
+
+def drawable_text(text: str, font_file: str) -> str:
+    """Drop the characters no available font can draw.
+
+    An emoji no font on disk has is better left out than drawn as a box. Exotic
+    whitespace - an ideographic space carried over from the source - becomes a
+    plain space, which every font has and which wrap_text can break on.
+    """
+    return "".join(
+        " " if char.isspace() else char
+        for char in text
+        if char.isspace() or font_for_char(char, font_file) is not None
+    )
+
+
+def font_runs(text: str, font_file: str, size: int) -> list[tuple[str, ImageFont.FreeTypeFont]]:
+    """Split a line into runs, each with the font that can draw it.
+
+    Text the chosen font covers comes back as a single run, which is the usual
+    case; a heart in the middle of a sentence comes back as three.
+    """
+    runs: list[tuple[str, ImageFont.FreeTypeFont]] = []
+    current = ""
+    current_file = None
+
+    for char in text:
+        chosen = font_for_char(char, font_file)
+
+        if chosen is None:
+            continue
+
+        if chosen != current_file:
+            if len(current) > 0:
+                runs.append((current, load_font(current_file, size)))
+
+            current, current_file = "", chosen
+
+        current += char
+
+    if len(current) > 0:
+        runs.append((current, load_font(current_file, size)))
+
+    return runs
+
+
+@lru_cache(maxsize=64)
+def load_font(font_file: str, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(font_file, size)
 
 
 def get_fonts() -> list[tuple[str, str]]:
