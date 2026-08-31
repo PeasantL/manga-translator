@@ -10,6 +10,7 @@ from translator.utils import (
     get_model_path,
     require_model_file,
     apply_mask,
+    reading_order_indices,
 )
 import traceback
 import torch
@@ -188,6 +189,13 @@ class FullConversion:
                         )
                 except:
                     traceback.print_exc()
+
+            # Detections arrive in confidence order, which is meaningless as reading
+            # order. Sort them the way the page is read so that the translator sees
+            # the dialogue in sequence.
+            if len(to_translate) > 1:
+                order = reading_order_indices([x[0] for x in to_translate])
+                to_translate = [to_translate[i] for i in order]
 
             # third pass, draw text
             draw_colors = [

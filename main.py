@@ -12,6 +12,7 @@ from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
+from translator.utils import natural_sort_key
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -62,7 +63,12 @@ def collect_image_files(paths: list[str]) -> list[str]:
     """
     if len(paths) == 1 and os.path.isdir(paths[0]):
         folder = paths[0]
-        candidates = [os.path.join(folder, x) for x in sorted(os.listdir(folder))]
+        # Natural order, so that page2 comes before page10. A folder is treated as
+        # one chapter and this is the order its dialogue is read in.
+        candidates = [
+            os.path.join(folder, x)
+            for x in sorted(os.listdir(folder), key=natural_sort_key)
+        ]
     else:
         candidates = paths
 
