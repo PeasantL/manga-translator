@@ -38,7 +38,7 @@ with JSON between them:
 |-------|-------|-------|--------|
 | `ocr` | 1–4 | the chapter's pages | `clean/` and `ocr.json` |
 | `translate` | 5 | `ocr.json` | `translated.json` |
-| `draw` | 6 | `translated.json` and `clean/` | the finished pages |
+| `draw` | 6 | `translated.json` and `clean/` | `drawn/` |
 
 Each stage builds only what it needs. `translate` and `draw` load no detection,
 cleaning or OCR model at all, so re-running them costs seconds rather than
@@ -120,10 +120,10 @@ input/                        output/
     my-oneshot/                   my-oneshot/
         01.png                        clean/01.png     cleaned, no text
         02.png                        clean/02.png
+                                      drawn/01.png     finished pages
+                                      drawn/02.png
                                       ocr.json         boxes and source text
                                       translated.json  the same, translated
-                                      01.png           finished pages
-                                      02.png
 ```
 
 ```bash
@@ -190,7 +190,7 @@ project if you want to retrain.
 python3 main.py -f examples
 ```
 
-The converted pages are written to `output/raw/`. They are not checked in, since
+The converted pages are written to `output/raw/drawn/`. They are not checked in, since
 the result depends on which model and target language you translate with.
 
 ## Glossary

@@ -10,7 +10,14 @@ from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
-from translator.chapter import find_chapters, Chapter, ChapterDocument, Page, Region, CLEAN_DIR
+from translator.chapter import (
+    find_chapters,
+    Chapter,
+    ChapterDocument,
+    Page,
+    Region,
+    CLEAN_DIR,
+)
 from translator.core.plugin import OcrResult, TranslatorResult
 from translator.utils import read_image, write_image
 
@@ -190,13 +197,17 @@ async def stage_draw(chapter: Chapter, args):
     """Step 6: draw translated.json onto the cleaned pages.
 
     Reads the cleaned pages and the JSON, so no vision or language model is
-    loaded here either.
+    loaded here either. The finished pages go in their own folder next to the
+    cleaned ones, so that what this stage produced can be handed over, deleted or
+    re-made without touching the input to it.
     """
     document = ChapterDocument.load(chapter.translated_path)
 
     drawer = select_plugin(get_drawers(), args.drawer, "drawer")(
         **json_to_args(args.drawer_args)
     )
+
+    os.makedirs(chapter.drawn_dir, exist_ok=True)
 
     written = 0
 
@@ -218,12 +229,12 @@ async def stage_draw(chapter: Chapter, args):
             drawer,
         )
 
-        if write_image(os.path.join(chapter.output_dir, page.name), drawn):
+        if write_image(os.path.join(chapter.drawn_dir, page.name), drawn):
             written += 1
         else:
             print(f"{chapter.name}: could not write {page.name}")
 
-    print(f"{chapter.name}: wrote {written} pages to {chapter.output_dir}/")
+    print(f"{chapter.name}: wrote {written} pages to {chapter.drawn_dir}/")
 
 
 async def do_convert(chapters: list, args):

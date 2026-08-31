@@ -8,10 +8,10 @@ folder so that its results have a folder of the same name to go into:
         my-oneshot/                   my-oneshot/
             01.png                        clean/01.png
             02.png                        clean/02.png
+                                          drawn/01.png
+                                          drawn/02.png
                                           ocr.json
                                           translated.json
-                                          01.png
-                                          02.png
 """
 
 import json
@@ -22,6 +22,7 @@ from translator.utils import natural_sort_key
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 CLEAN_DIR = "clean"
+DRAWN_DIR = "drawn"
 OCR_FILE = "ocr.json"
 TRANSLATED_FILE = "translated.json"
 
@@ -37,6 +38,10 @@ class Chapter:
     @property
     def clean_dir(self) -> str:
         return os.path.join(self.output_dir, CLEAN_DIR)
+
+    @property
+    def drawn_dir(self) -> str:
+        return os.path.join(self.output_dir, DRAWN_DIR)
 
     @property
     def ocr_path(self) -> str:
