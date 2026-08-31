@@ -271,6 +271,97 @@ def get_dominant_color(frame: np.ndarray, region_mask=None):
     return (dominant >> 16) & 255, (dominant >> 8) & 255, dominant & 255
 
 
+def luma(color) -> float:
+    """Perceived brightness of a BGR colour, 0 to 255."""
+    blue, green, red = (float(v) for v in color[:3])
+
+    return (0.114 * blue) + (0.587 * green) + (0.299 * red)
+
+
+def measure_region_colors(
+    frame: np.ndarray, frame_clean: np.ndarray, text_mask: np.ndarray, spread: int = 7
+):
+    """The colour of a bubble's text, and of what the text was drawn on.
+
+    Both are measured rather than predicted, off the refined per glyph mask the
+    cleaner built: the background from the cleaned page, where the text has
+    already been erased, and the text from the same pixels in the original.
+
+    Returns (None, None) when there are no glyph pixels to measure.
+    """
+    mask = ensure_gray(text_mask)
+    glyphs = mask > 0
+
+    if not glyphs.any():
+        return None, None
+
+    # Just the area under and immediately around the glyphs, so a box that
+    # catches some of the panel outside the bubble is not measured as if the
+    # text sat on it.
+    kernel = np.ones((spread, spread), np.uint8)
+    around = cv2.dilate(mask, kernel, iterations=1) > 0
+    background = frame_clean[around] if around.any() else frame_clean.reshape(-1, 3)
+
+    background_color = tuple(int(v) for v in np.median(background, axis=0))
+
+    pixels = frame[glyphs]
+    brightness = pixels @ np.array((0.114, 0.587, 0.299))
+
+    # The mask hugs the glyph outline, so a good half of what it covers is the
+    # antialiased edge, and the median of that is a grey which is neither the
+    # lettering nor the paper. Measure the end of the range the lettering is on
+    # instead - the darkest tenth for dark text, the lightest tenth for light.
+    if np.median(brightness) < luma(background_color):
+        core = pixels[brightness <= np.percentile(brightness, 10)]
+    else:
+        core = pixels[brightness >= np.percentile(brightness, 90)]
+
+    text_color = tuple(int(v) for v in np.median(core, axis=0))
+
+    return text_color, background_color
+
+
+def drawing_colors(text_color, background_color):
+    """What to draw a region with: foreground, outline colour, and whether to outline.
+
+    Manga lettering is black or white far more often than it is anything else,
+    and the median of an antialiased glyph lands short of both, so a measurement
+    near either end is snapped to it. A measurement that would leave the text
+    barely distinguishable from what it sits on is discarded in favour of
+    whichever of black or white the background is not - being wrong about the
+    shade is recoverable, drawing black on black is not.
+    """
+    background = np.array(
+        background_color if background_color is not None else (255, 255, 255)
+    )
+    background_luma = luma(background)
+
+    if text_color is None:
+        foreground = (
+            TranslatorGlobals.COLOR_WHITE
+            if background_luma < 128
+            else TranslatorGlobals.COLOR_BLACK
+        )
+    else:
+        foreground = np.array(text_color)
+
+        if luma(foreground) < 90:
+            foreground = TranslatorGlobals.COLOR_BLACK
+        elif luma(foreground) > 165:
+            foreground = TranslatorGlobals.COLOR_WHITE
+
+        if abs(luma(foreground) - background_luma) < 60:
+            foreground = (
+                TranslatorGlobals.COLOR_WHITE
+                if background_luma < 128
+                else TranslatorGlobals.COLOR_BLACK
+            )
+
+    # Light text on a dark bubble is outlined in the bubble's own colour, so it
+    # stays readable where the box overhangs the bubble by a pixel or two.
+    return foreground, background, luma(foreground) > background_luma
+
+
 def mask_text_and_make_bubble_mask(
     frame: np.ndarray, frame_text_mask: np.ndarray, frame_cleaned: np.ndarray
 ):

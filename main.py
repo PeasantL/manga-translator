@@ -131,11 +131,17 @@ async def stage_ocr(chapter: Chapter, args):
             print(f"{chapter.name}: could not write {clean_path}")
 
         regions = []
-        for box in page.draw_boxes:
+        for box, (text_color, background_color) in zip(page.draw_boxes, page.colors):
             result = ocr_results[position] if position < len(ocr_results) else OcrResult()
             position += 1
             regions.append(
-                Region(box=list(box), text=result.text, language=result.language)
+                Region(
+                    box=list(box),
+                    text=result.text,
+                    language=result.language,
+                    text_color=text_color,
+                    background_color=background_color,
+                )
             )
 
         height, width = page.frame.shape[:2]
@@ -227,6 +233,7 @@ async def stage_draw(chapter: Chapter, args):
                 for r in page.regions
             ],
             drawer,
+            [(r.text_color, r.background_color) for r in page.regions],
         )
 
         if write_image(os.path.join(chapter.drawn_dir, page.name), drawn):
@@ -257,8 +264,11 @@ async def do_convert(chapters: list, args):
                     await stage_translate(chapter, args)
                 else:
                     await stage_draw(chapter, args)
-            except FileNotFoundError as missing:
-                print(f"{chapter.name}: {missing}")
+            except (FileNotFoundError, ValueError) as problem:
+                # A missing artifact, or one written by a build that used a
+                # different schema. Either way the later stages have nothing to
+                # work from, so stop on this chapter rather than half convert it.
+                print(f"{chapter.name}: {problem}")
                 break
 
 

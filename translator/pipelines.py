@@ -5,12 +5,13 @@ from ultralytics import YOLO
 from translator.utils import (
     mask_text_and_make_bubble_mask,
     get_bounds_for_text,
-    TranslatorGlobals,
     has_white,
     get_model_path,
     require_model_file,
     apply_mask,
     reading_order_indices,
+    measure_region_colors,
+    drawing_colors,
 )
 import traceback
 import torch
@@ -41,6 +42,7 @@ async def draw_page(
     draw_boxes: list[tuple[int, int, int, int]],
     translations: list[TranslatorResult],
     drawer: Drawer,
+    colors: list = None,
 ) -> np.ndarray:
     """Draw translations into an already cleaned page.
 
@@ -52,11 +54,10 @@ async def draw_page(
         return frame
 
     try:
-        color = (
-            TranslatorGlobals.COLOR_BLACK,
-            TranslatorGlobals.COLOR_BLACK,
-            False,
-        )
+        # A region whose colours were never measured is lettered black on white,
+        # which is what every bubble was assumed to be before they were.
+        if colors is None:
+            colors = [(None, None) for _ in draw_boxes]
 
         # The drawer says how much room the text needs. A translation too long
         # for its bubble is drawn over the surrounding art at a readable size,
@@ -64,7 +65,7 @@ async def draw_page(
         boxes = []
         to_draw = []
 
-        for bbox, translation in zip(draw_boxes, translations):
+        for bbox, translation, measured in zip(draw_boxes, translations, colors):
             box, expanded = drawer.box_for(translation.text, bbox, frame.shape)
 
             (x1, y1, x2, y2) = box
@@ -72,7 +73,7 @@ async def draw_page(
 
             to_draw.append(
                 Drawable(
-                    color=color,
+                    color=drawing_colors(*measured),
                     frame=frame[y1:y2, x1:x2].copy(),
                     translation=translation,
                     backdrop=expanded,
@@ -116,7 +117,9 @@ def align_translations(
 class PageLayout:
     """One page after cleaning, plus the text regions it contributes to the chapter.
 
-    draw_boxes and text_crops are parallel and in reading order.
+    draw_boxes, text_crops and colors are parallel and in reading order. Each
+    entry in colors is the (text, background) pair measured off the page before
+    the text was erased.
     """
 
     def __init__(
@@ -124,10 +127,12 @@ class PageLayout:
         frame: np.ndarray,
         draw_boxes: list[tuple[int, int, int, int]],
         text_crops: list[np.ndarray],
+        colors: list = None,
     ) -> None:
         self.frame = frame
         self.draw_boxes = draw_boxes
         self.text_crops = text_crops
+        self.colors = colors if colors is not None else [(None, None) for _ in draw_boxes]
 
 
 class FullConversion:
@@ -243,6 +248,13 @@ class FullConversion:
                                 bubble, bubble_text_mask, bubble_clean
                             )
 
+                            # Measured before the original text is painted over,
+                            # because it is the only moment the page still has
+                            # the lettering on it.
+                            colors = measure_region_colors(
+                                bubble, bubble_clean, bubble_text_mask
+                            )
+
                             frame[y1:y2, x1:x2] = bubble_clean
                             text_draw_bounds = get_bounds_for_text(bubble_mask)
 
@@ -257,7 +269,7 @@ class FullConversion:
                             pt2_y += y1
 
                             to_translate.append(
-                                [(pt1_x, pt1_y, pt2_x, pt2_y), text_only]
+                                [(pt1_x, pt1_y, pt2_x, pt2_y), text_only, colors]
                             )
                     else:
                         if self.translate_free_text:
@@ -266,8 +278,13 @@ class FullConversion:
                                 text_only, _ = mask_text_and_make_bubble_mask(
                                     free_text, bubble_text_mask, bubble_clean
                                 )
+                                colors = measure_region_colors(
+                                    free_text, bubble_clean, bubble_text_mask
+                                )
 
-                                to_translate.append([(x1, y1, x2, y2), text_only])
+                                to_translate.append(
+                                    [(x1, y1, x2, y2), text_only, colors]
+                                )
 
                             frame[y1:y2, x1:x2] = frame_clean[y1:y2, x1:x2]
                         else:
@@ -297,6 +314,7 @@ class FullConversion:
                 frame=frame,
                 draw_boxes=[x[0] for x in to_translate],
                 text_crops=[x[1] for x in to_translate],
+                colors=[x[2] for x in to_translate],
             )
         except:
             traceback.print_exc()
@@ -305,7 +323,7 @@ class FullConversion:
     async def render_frame(self, page: "PageLayout", translations: list) -> np.ndarray:
         """Stage 6 for one page: draw the chapter's translations back into it."""
         return await draw_page(
-            page.frame, page.draw_boxes, translations, self.drawer
+            page.frame, page.draw_boxes, translations, self.drawer, page.colors
         )
 
     async def clean_and_read(
