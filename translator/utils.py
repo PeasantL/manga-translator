@@ -13,6 +13,7 @@ from typing import Union, Callable
 from PIL import Image, ImageFont
 from hyphen import Hyphenator
 from collections import deque
+from functools import lru_cache
 import traceback
 
 
@@ -268,6 +269,97 @@ def get_dominant_color(frame: np.ndarray, region_mask=None):
     dominant = int(values[counts.argmax()])
 
     return (dominant >> 16) & 255, (dominant >> 8) & 255, dominant & 255
+
+
+def luma(color) -> float:
+    """Perceived brightness of a BGR colour, 0 to 255."""
+    blue, green, red = (float(v) for v in color[:3])
+
+    return (0.114 * blue) + (0.587 * green) + (0.299 * red)
+
+
+def measure_region_colors(
+    frame: np.ndarray, frame_clean: np.ndarray, text_mask: np.ndarray, spread: int = 7
+):
+    """The colour of a bubble's text, and of what the text was drawn on.
+
+    Both are measured rather than predicted, off the refined per glyph mask the
+    cleaner built: the background from the cleaned page, where the text has
+    already been erased, and the text from the same pixels in the original.
+
+    Returns (None, None) when there are no glyph pixels to measure.
+    """
+    mask = ensure_gray(text_mask)
+    glyphs = mask > 0
+
+    if not glyphs.any():
+        return None, None
+
+    # Just the area under and immediately around the glyphs, so a box that
+    # catches some of the panel outside the bubble is not measured as if the
+    # text sat on it.
+    kernel = np.ones((spread, spread), np.uint8)
+    around = cv2.dilate(mask, kernel, iterations=1) > 0
+    background = frame_clean[around] if around.any() else frame_clean.reshape(-1, 3)
+
+    background_color = tuple(int(v) for v in np.median(background, axis=0))
+
+    pixels = frame[glyphs]
+    brightness = pixels @ np.array((0.114, 0.587, 0.299))
+
+    # The mask hugs the glyph outline, so a good half of what it covers is the
+    # antialiased edge, and the median of that is a grey which is neither the
+    # lettering nor the paper. Measure the end of the range the lettering is on
+    # instead - the darkest tenth for dark text, the lightest tenth for light.
+    if np.median(brightness) < luma(background_color):
+        core = pixels[brightness <= np.percentile(brightness, 10)]
+    else:
+        core = pixels[brightness >= np.percentile(brightness, 90)]
+
+    text_color = tuple(int(v) for v in np.median(core, axis=0))
+
+    return text_color, background_color
+
+
+def drawing_colors(text_color, background_color):
+    """What to draw a region with: foreground, outline colour, and whether to outline.
+
+    Manga lettering is black or white far more often than it is anything else,
+    and the median of an antialiased glyph lands short of both, so a measurement
+    near either end is snapped to it. A measurement that would leave the text
+    barely distinguishable from what it sits on is discarded in favour of
+    whichever of black or white the background is not - being wrong about the
+    shade is recoverable, drawing black on black is not.
+    """
+    background = np.array(
+        background_color if background_color is not None else (255, 255, 255)
+    )
+    background_luma = luma(background)
+
+    if text_color is None:
+        foreground = (
+            TranslatorGlobals.COLOR_WHITE
+            if background_luma < 128
+            else TranslatorGlobals.COLOR_BLACK
+        )
+    else:
+        foreground = np.array(text_color)
+
+        if luma(foreground) < 90:
+            foreground = TranslatorGlobals.COLOR_BLACK
+        elif luma(foreground) > 165:
+            foreground = TranslatorGlobals.COLOR_WHITE
+
+        if abs(luma(foreground) - background_luma) < 60:
+            foreground = (
+                TranslatorGlobals.COLOR_WHITE
+                if background_luma < 128
+                else TranslatorGlobals.COLOR_BLACK
+            )
+
+    # Light text on a dark bubble is outlined in the bubble's own colour, so it
+    # stays readable where the box overhangs the bubble by a pixel or two.
+    return foreground, background, luma(foreground) > background_luma
 
 
 def mask_text_and_make_bubble_mask(
@@ -628,6 +720,103 @@ def reading_order_indices(
     return order
 
 
+FALLBACK_FONTS = (
+    "NotoSansJP-Regular.ttf",
+    "msmincho.ttf",
+    "reiko.ttf",
+)
+
+
+@lru_cache(maxsize=32)
+def font_charset(font_file: str) -> frozenset:
+    """The code points a font can actually draw.
+
+    Pillow has no fallback: a character the font has no glyph for is drawn as
+    .notdef, the empty box readers see as []. Comic fonts carry no symbols, so a
+    heart in a translation comes out as a box. Reading the cmap is the only way
+    to know before drawing.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+
+        with TTFont(font_file, fontNumber=0, lazy=True) as font:
+            return frozenset(font.getBestCmap().keys())
+    except Exception:
+        # Better to assume the font covers everything than to drop text because
+        # its cmap could not be parsed.
+        return frozenset()
+
+
+def font_for_char(char: str, font_file: str) -> Union[str, None]:
+    """Which font file to draw one character with, or None if nothing can.
+
+    The chosen font is preferred whenever it has the glyph, so ordinary text is
+    never split up. Only what it lacks goes looking through the fallbacks.
+    """
+    code = ord(char)
+    charset = font_charset(font_file)
+
+    if len(charset) == 0 or code in charset:
+        return font_file
+
+    for name in FALLBACK_FONTS:
+        candidate = os.path.abspath(os.path.join("./fonts", name))
+
+        if os.path.isfile(candidate) and code in font_charset(candidate):
+            return candidate
+
+    return None
+
+
+def drawable_text(text: str, font_file: str) -> str:
+    """Drop the characters no available font can draw.
+
+    An emoji no font on disk has is better left out than drawn as a box. Exotic
+    whitespace - an ideographic space carried over from the source - becomes a
+    plain space, which every font has and which wrap_text can break on.
+    """
+    return "".join(
+        " " if char.isspace() else char
+        for char in text
+        if char.isspace() or font_for_char(char, font_file) is not None
+    )
+
+
+def font_runs(text: str, font_file: str, size: int) -> list[tuple[str, ImageFont.FreeTypeFont]]:
+    """Split a line into runs, each with the font that can draw it.
+
+    Text the chosen font covers comes back as a single run, which is the usual
+    case; a heart in the middle of a sentence comes back as three.
+    """
+    runs: list[tuple[str, ImageFont.FreeTypeFont]] = []
+    current = ""
+    current_file = None
+
+    for char in text:
+        chosen = font_for_char(char, font_file)
+
+        if chosen is None:
+            continue
+
+        if chosen != current_file:
+            if len(current) > 0:
+                runs.append((current, load_font(current_file, size)))
+
+            current, current_file = "", chosen
+
+        current += char
+
+    if len(current) > 0:
+        runs.append((current, load_font(current_file, size)))
+
+    return runs
+
+
+@lru_cache(maxsize=64)
+def load_font(font_file: str, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(font_file, size)
+
+
 def get_fonts() -> list[tuple[str, str]]:
     fonts = []
     for file in filter(lambda a: a.endswith(".ttf"), os.listdir("./fonts")):
@@ -646,7 +835,7 @@ def require_model_file(path: str) -> str:
         raise FileNotFoundError(
             f"Missing model weights: {os.path.abspath(path)}\n"
             "Model files are not checked into the repository. Download them with:\n"
-            "    ./scripts/fetch_models.sh"
+            "    ./fetch_models.sh"
         )
 
     return path
@@ -669,6 +858,7 @@ def get_best_font_size(
     min_chars_per_line: int = 6,
     initial_iterations: int = 0,
     hyphenator: Union[Hyphenator, None] = None,
+    min_size: int = 1,
 ) -> Union[tuple[None, None, None, int], tuple[int, int, int, int]]:
     current_font_size = start_size
     current_font = None
@@ -678,7 +868,9 @@ def get_best_font_size(
     while True:
         iterations += 1
 
-        if current_font_size < 0:
+        # Below min_size the text is too small to read, so report that it does
+        # not fit rather than shrinking it into illegibility.
+        if current_font_size < min_size:
             return None, None, None, iterations
 
         current_font = ImageFont.truetype(font_file, current_font_size)
@@ -705,6 +897,77 @@ def get_best_font_size(
         current_font_size -= step
 
 
+
+
+def fit_box(
+    text: str,
+    box: tuple[int, int, int, int],
+    page_shape: tuple,
+    font_file: str,
+    min_font_size: int,
+    space_between_lines: int = 2,
+    hyphenator: Union[Hyphenator, None] = None,
+    max_scale: float = 2.5,
+) -> tuple[tuple[int, int, int, int], bool]:
+    """How much room this text needs, and whether that is more than it was given.
+
+    A long translation in a small bubble used to be shrunk until it fit, which
+    at some point means unreadable, or dropped entirely when even that failed.
+    Instead the box is grown around its own centre until the text fits at the
+    minimum readable size. The caller is told when that happened, so the text
+    can be drawn on a backdrop - it is now over artwork, not over a cleaned
+    bubble.
+    """
+    page_height, page_width = page_shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in box)
+    width, height = x2 - x1, y2 - y1
+
+    if width <= 0 or height <= 0 or len(text.strip()) == 0:
+        return (x1, y1, x2, y2), False
+
+    def fits(w: int, h: int) -> bool:
+        size, _, _, _ = get_best_font_size(
+            text,
+            (w, h),
+            font_file=font_file,
+            space_between_lines=space_between_lines,
+            start_size=min_font_size,
+            step=1,
+            hyphenator=hyphenator,
+            min_size=min_font_size,
+        )
+
+        return size is not None
+
+    if fits(width, height):
+        return (x1, y1, x2, y2), False
+
+    centre_x, centre_y = x1 + (width / 2), y1 + (height / 2)
+    grown = (x1, y1, x2, y2)
+    scale = 1.0
+
+    while scale < max_scale:
+        scale += 0.1
+
+        new_width = min(page_width, round(width * scale))
+        new_height = min(page_height, round(height * scale))
+
+        # Keep the text over the bubble it came from, but never off the page.
+        new_x1 = int(max(0, min(page_width - new_width, round(centre_x - (new_width / 2)))))
+        new_y1 = int(max(0, min(page_height - new_height, round(centre_y - (new_height / 2)))))
+
+        grown = (new_x1, new_y1, new_x1 + new_width, new_y1 + new_height)
+
+        if fits(new_width, new_height):
+            return grown, True
+
+        if new_width == page_width and new_height == page_height:
+            break
+
+    # Nothing fit even at the largest allowed size. Hand back the biggest box
+    # tried anyway; the drawer draws at the minimum size and overflows it, which
+    # is still more use than an empty bubble.
+    return grown, True
 
 
 class COCO_TO_YOLO_TASK:
@@ -745,3 +1008,41 @@ def resize_and_pad(cv2_image: np.ndarray,target_size: tuple[int,int],extra_paddi
     return cv2.copyMakeBorder(
             image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=pad_color
         )
+
+
+def read_image(path: str) -> Union[np.ndarray, None]:
+    """cv2.imread that works with non ASCII paths.
+
+    On Windows cv2.imread hands the path to the ANSI file API, so a folder named
+    with anything outside the local code page - a chapter title with a star or a
+    Japanese character in it - simply fails to open. Reading the bytes ourselves
+    and decoding them in memory sidesteps the path entirely.
+    """
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+
+    if data.size == 0:
+        return None
+
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def write_image(path: str, frame: np.ndarray) -> bool:
+    """cv2.imwrite that works with non ASCII paths, and that says when it failed.
+
+    cv2.imwrite returns False rather than raising, so a whole chapter could be
+    reported as written while nothing reached the disk.
+    """
+    success, encoded = cv2.imencode(os.path.splitext(path)[1] or ".png", frame)
+
+    if not success:
+        return False
+
+    try:
+        encoded.tofile(path)
+    except OSError:
+        return False
+
+    return True

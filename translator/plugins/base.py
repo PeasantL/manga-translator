@@ -123,14 +123,37 @@ class Translator(BasePlugin):
         return "Base Translator"
 
 class Drawable:
-    def __init__(self,color: tuple[np.ndarray,np.ndarray,bool], translation: TranslatorResult,frame: np.ndarray) -> None:
+    def __init__(
+        self,
+        color: tuple[np.ndarray, np.ndarray, bool],
+        translation: TranslatorResult,
+        frame: np.ndarray,
+        backdrop: bool = False,
+    ) -> None:
         self.color = color
         self.translation = translation
         self.frame = frame
+        # Set when the text did not fit its bubble and is being drawn over
+        # artwork instead, so the drawer knows to put something behind it.
+        self.backdrop = backdrop
 
 class Drawer(BasePlugin):
     def __init__(self) -> None:
         super().__init__()
+
+    def box_for(
+        self,
+        text: str,
+        box: tuple[int, int, int, int],
+        page_shape: tuple,
+    ) -> tuple[tuple[int, int, int, int], bool]:
+        """The area this drawer needs for `text`, and whether it grew.
+
+        Text layout belongs to the drawer, so the pipeline asks rather than
+        assuming the detected box is usable. The base drawer draws nothing, so
+        it always takes what it is given.
+        """
+        return tuple(int(v) for v in box), False
 
 
     async def draw(
