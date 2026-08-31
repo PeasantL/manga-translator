@@ -14,37 +14,68 @@ from translator.utils import (
 import traceback
 import torch
 import asyncio
+from typing import Union
 from translator.core.plugin import Drawable, Translator, Ocr, Drawer, Cleaner
 from translator.cleaners.lama import LamaCleaner
 from translator.drawers.horizontal import HorizontalDrawer
 
 
+# server.py builds a FullConversion per request, which reloaded every model each
+# time. The weights are read-only during inference, so one instance per path is
+# enough for the whole process.
+_yolo_models: dict[str, YOLO] = {}
+
+
+def load_yolo(path: str) -> YOLO:
+    resolved = require_model_file(path)
+
+    if resolved not in _yolo_models:
+        _yolo_models[resolved] = YOLO(resolved)
+
+    return _yolo_models[resolved]
+
+
 class FullConversion:
     def __init__(
         self,
-        detect_model: str = get_model_path("detection.pt"),
-        seg_model: str = get_model_path("segmentation.pt"),
-        translator: Translator = Translator(),
-        ocr: Ocr = Ocr(),
-        drawer: Drawer = HorizontalDrawer(),
-        cleaner: Cleaner = LamaCleaner(),
+        detect_model: Union[str, None] = None,
+        seg_model: Union[str, None] = None,
+        translator: Union[Translator, None] = None,
+        ocr: Union[Ocr, None] = None,
+        drawer: Union[Drawer, None] = None,
+        cleaner: Union[Cleaner, None] = None,
         translate_free_text: bool = False,
-        device=torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu"),
-        yolo_device=0 if torch.cuda.is_available() else "cpu",
+        device=None,
+        yolo_device=None,
         debug=False,
     ) -> None:
+        # Everything below is built here rather than in the signature. As default
+        # arguments they were evaluated once at import time, so merely importing this
+        # module downloaded and loaded the LaMa weights - even for `main.py --help`.
+        if device is None:
+            device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+        if yolo_device is None:
+            yolo_device = 0 if torch.cuda.is_available() else "cpu"
+
+        if detect_model is None:
+            detect_model = get_model_path("detection.pt")
+
+        if seg_model is None:
+            seg_model = get_model_path("segmentation.pt")
+
         self.device = device
         print("Pipeline created using",device)
         self.yolo_device = yolo_device
-        self.segmentation_model = YOLO(require_model_file(seg_model))
-        self.detection_model = YOLO(require_model_file(detect_model))
+        self.segmentation_model = load_yolo(seg_model)
+        self.detection_model = load_yolo(detect_model)
 
         self.translate_free_text = translate_free_text
-        self.translator = translator
-        self.ocr = ocr
-        self.drawer = drawer
+        self.translator = translator if translator is not None else Translator()
+        self.ocr = ocr if ocr is not None else Ocr()
+        self.drawer = drawer if drawer is not None else HorizontalDrawer()
         self.debug = debug
-        self.cleaner = cleaner
+        self.cleaner = cleaner if cleaner is not None else LamaCleaner()
 
     def filter_results(self, results, min_confidence=0.1):
         bounding_boxes = np.array(results.boxes.xyxy.cpu(), dtype="int")
@@ -99,7 +130,7 @@ class FullConversion:
             # First pass, mask all bubbles
             for bbox, cls, conf in detect_result:
                 try:
-                    color = (0, 0, 255) if cls == 1 else (0, 255, 0)
+                    color = (0, 0, 255) if cls == "text_free" else (0, 255, 0)
 
                     (x1, y1, x2, y2) = bbox
 
@@ -134,7 +165,7 @@ class FullConversion:
                     else:
                         if self.translate_free_text:
                             free_text = frame[y1:y2, x1:x2]
-                            if has_white(free_text):
+                            if has_white(bubble_text_mask):
                                 text_only, _ = mask_text_and_make_bubble_mask(
                                     free_text, bubble_text_mask, bubble_clean
                                 )
