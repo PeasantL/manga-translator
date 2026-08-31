@@ -29,6 +29,27 @@ bottom, right to left within a row — and sent together.
 Chapters longer than the translator's `max_lines` (200 by default) are split
 across requests, with the previous lines carried over as context.
 
+### The three stages
+
+The six steps are grouped into three stages that can each be run on their own,
+with JSON between them:
+
+| Stage | Steps | Reads | Writes |
+|-------|-------|-------|--------|
+| `ocr` | 1–4 | the chapter's pages | `clean/` and `ocr.json` |
+| `translate` | 5 | `ocr.json` | `translated.json` |
+| `draw` | 6 | `translated.json` and `clean/` | the finished pages |
+
+Each stage builds only what it needs. `translate` and `draw` load no detection,
+cleaning or OCR model at all, so re-running them costs seconds rather than
+minutes — and `ocr` needs no API key.
+
+`ocr.json` holds, for every region, the box it will be drawn into, the text read
+out of it, and its language. `translated.json` is the same document with a
+translation filled in per region. Because the box travels with the text, the
+draw stage never has to detect anything again. Both are ordinary JSON: correct a
+translation by hand, re-run `-s draw`, and only the drawing happens again.
+
 Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
 its settings form from those declarations, so adding a backend means writing one
 class and adding one line to the matching `get.py`.
@@ -91,16 +112,31 @@ Commands are run from the repository root.
 
 ### CLI
 
-```bash
-python3 main.py -f ./input                 # a folder, treated as one chapter
-python3 main.py -f image1.png image2.png   # or a list of images
+`-f` takes the folder that holds your chapters. Each folder inside it is one
+chapter, and gets a folder of the same name under `output/`:
+
+```
+input/                        output/
+    my-oneshot/                   my-oneshot/
+        01.png                        clean/01.png     cleaned, no text
+        02.png                        clean/02.png
+                                      ocr.json         boxes and source text
+                                      translated.json  the same, translated
+                                      01.png           finished pages
+                                      02.png
 ```
 
-A folder's pages are sorted naturally, so `page2` comes before `page10`. An
-explicit list of files is used in the order given. Either way the whole set is
-translated together, so pass a chapter at a time rather than a page at a time.
+```bash
+python3 main.py -f input                   # every chapter, every stage
+python3 main.py -f input -s ocr            # or one stage at a time
+python3 main.py -f input -s translate
+python3 main.py -f input -s draw
+```
 
-Results are written to `output/`. `python3 main.py --help` lists the available
+A chapter needs a folder. Images lying loose in the input root are skipped,
+since there would be no name to give their output folder. Pages are sorted
+naturally, so `page2` comes before `page10` — name them so they sort into
+reading order, because that order is what the translator sees. `python3 main.py --help` lists the available
 OCR, translator, drawer and cleaner backends with their index numbers, which is
 what `-o`, `-t`, `-dr` and `-c` take. Each has a matching `-oa`, `-ta`, `-dra`
 and `-ca` for that backend's settings, e.g. `-ca "dilation=15"` to erase more
@@ -147,13 +183,14 @@ project if you want to retrain.
 
 ## Examples
 
-`examples/raw` holds six sample pages. Convert them with:
+`examples/raw` holds six sample pages. Pointing `-f` at `examples` treats
+`raw` as a chapter:
 
 ```bash
-python3 main.py -f examples/raw
+python3 main.py -f examples
 ```
 
-The converted pages are written to `output/`. They are not checked in, since
+The converted pages are written to `output/raw/`. They are not checked in, since
 the result depends on which model and target language you translate with.
 
 ## Glossary

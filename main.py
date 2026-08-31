@@ -6,12 +6,13 @@ import ast
 import cv2
 import asyncio
 import os
-from translator.pipelines import FullConversion
+from translator.pipelines import FullConversion, draw_page, align_translations
 from translator.translators.get import get_translators
 from translator.ocr.get import get_ocr
 from translator.drawers.get import get_drawers
 from translator.cleaners.get import get_cleaners
-from translator.chapter import find_chapters
+from translator.chapter import find_chapters, Chapter, ChapterDocument, Page, Region, CLEAN_DIR
+from translator.core.plugin import OcrResult, TranslatorResult
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -60,19 +61,10 @@ def select_plugin(options: list, index: int, kind: str):
     return options[index]
 
 
-async def do_convert(chapters: list, translator: int, translator_args: str, ocr: int, ocr_args: str, drawer: int, drawer_args: str, cleaner: int, cleaner_args: str):
-    converter = FullConversion(
-        translator=select_plugin(get_translators(), translator, "translator")(**json_to_args(translator_args)),
-        ocr=select_plugin(get_ocr(), ocr, "ocr")(**json_to_args(ocr_args)),
-        drawer=select_plugin(get_drawers(), drawer, "drawer")(**json_to_args(drawer_args)),
-        cleaner=select_plugin(get_cleaners(), cleaner, "cleaner")(**json_to_args(cleaner_args)),
-    )
-
-    for chapter in chapters:
-        await convert_chapter(chapter, converter)
+STAGES = ["all", "ocr", "translate", "draw"]
 
 
-def load_pages(chapter) -> list[tuple[str, "object"]]:
+def load_pages(chapter: Chapter) -> list[tuple[str, "object"]]:
     """Read a chapter's pages, dropping any the decoder cannot handle."""
     loaded = []
 
@@ -87,26 +79,168 @@ def load_pages(chapter) -> list[tuple[str, "object"]]:
     return loaded
 
 
-async def convert_chapter(chapter, converter: FullConversion):
+async def stage_ocr(chapter: Chapter, args):
+    """Steps 1 to 4: detect, segment, clean, read.
+
+    Writes the cleaned pages and ocr.json. No translator is built, so this stage
+    needs no API key.
+    """
     loaded = load_pages(chapter)
 
     if len(loaded) == 0:
-        print(f"{chapter.name}: nothing to convert")
+        print(f"{chapter.name}: no readable pages")
         return
 
-    os.makedirs(chapter.output_dir, exist_ok=True)
+    converter = FullConversion(
+        ocr=select_plugin(get_ocr(), args.ocr, "ocr")(**json_to_args(args.ocr_args)),
+        cleaner=select_plugin(get_cleaners(), args.cleaner, "cleaner")(
+            **json_to_args(args.cleaner_args)
+        ),
+    )
 
-    # The whole chapter is handed over at once, so the translator is given its
-    # dialogue as a single ordered list and can use the surrounding lines for
-    # context. FullConversion still chunks the models it runs page by page.
-    print(f"{chapter.name}: converting {len(loaded)} pages as one chapter")
+    print(f"{chapter.name}: reading {len(loaded)} pages")
 
-    results = await converter([frame for _, frame in loaded])
+    pages, ocr_results = await converter.clean_and_read([frame for _, frame in loaded])
 
-    for (path, _), frame in zip(loaded, results):
-        cv2.imwrite(os.path.join(chapter.output_dir, os.path.basename(path)), frame)
+    os.makedirs(chapter.clean_dir, exist_ok=True)
 
-    print(f"{chapter.name}: wrote {len(loaded)} pages to {chapter.output_dir}/")
+    document = ChapterDocument(chapter=chapter.name)
+    position = 0
+
+    for (path, _), page in zip(loaded, pages):
+        name = os.path.basename(path)
+        # Always PNG, whatever the source was. The cleaned page is an
+        # intermediate that gets read back and drawn on, so it must not lose
+        # anything to JPEG on the way through.
+        clean_name = os.path.splitext(name)[0] + ".png"
+        clean_relative = f"{CLEAN_DIR}/{clean_name}"
+
+        cv2.imwrite(os.path.join(chapter.output_dir, CLEAN_DIR, clean_name), page.frame)
+
+        regions = []
+        for box in page.draw_boxes:
+            result = ocr_results[position] if position < len(ocr_results) else OcrResult()
+            position += 1
+            regions.append(
+                Region(box=list(box), text=result.text, language=result.language)
+            )
+
+        height, width = page.frame.shape[:2]
+        document.pages.append(
+            Page(
+                name=name,
+                source=path.replace("\\", "/"),
+                clean=clean_relative,
+                width=width,
+                height=height,
+                regions=regions,
+            )
+        )
+
+    languages = [r.language for r in document.regions() if r.language]
+    document.source_language = languages[0] if languages else ""
+    document.save(chapter.ocr_path)
+
+    print(
+        f"{chapter.name}: wrote {len(document.regions())} regions to "
+        f"{chapter.ocr_path} and cleaned pages to {chapter.clean_dir}/"
+    )
+
+
+async def stage_translate(chapter: Chapter, args):
+    """Step 5: translate ocr.json into translated.json.
+
+    Reads and writes JSON only. No detection, cleaning or OCR model is loaded.
+    """
+    document = ChapterDocument.load(chapter.ocr_path)
+    regions = document.regions()
+
+    if len(regions) == 0:
+        print(f"{chapter.name}: no regions to translate")
+        document.save(chapter.translated_path)
+        return
+
+    translator = select_plugin(get_translators(), args.translator, "translator")(
+        **json_to_args(args.translator_args)
+    )
+
+    print(f"{chapter.name}: translating {len(regions)} regions as one chapter")
+
+    translations = align_translations(
+        list(await translator([OcrResult(r.text, r.language) for r in regions])),
+        len(regions),
+    )
+
+    for region, translation in zip(regions, translations):
+        region.translation = translation.text
+
+    document.target_language = getattr(translator, "target_lang", "")
+    document.save(chapter.translated_path)
+
+    print(f"{chapter.name}: wrote {chapter.translated_path}")
+
+
+async def stage_draw(chapter: Chapter, args):
+    """Step 6: draw translated.json onto the cleaned pages.
+
+    Reads the cleaned pages and the JSON, so no vision or language model is
+    loaded here either.
+    """
+    document = ChapterDocument.load(chapter.translated_path)
+
+    drawer = select_plugin(get_drawers(), args.drawer, "drawer")(
+        **json_to_args(args.drawer_args)
+    )
+
+    written = 0
+
+    for page in document.pages:
+        clean_path = os.path.join(chapter.output_dir, page.clean)
+        frame = cv2.imread(clean_path)
+
+        if frame is None:
+            print(f"{chapter.name}: missing cleaned page {clean_path}, skipping")
+            continue
+
+        drawn = await draw_page(
+            frame,
+            [tuple(r.box) for r in page.regions],
+            [
+                TranslatorResult(r.translation, document.target_language)
+                for r in page.regions
+            ],
+            drawer,
+        )
+
+        cv2.imwrite(os.path.join(chapter.output_dir, page.name), drawn)
+        written += 1
+
+    print(f"{chapter.name}: wrote {written} pages to {chapter.output_dir}/")
+
+
+async def do_convert(chapters: list, args):
+    """Run the requested stage over every chapter.
+
+    "all" runs the three stages in sequence rather than keeping the chapter in
+    memory, so that a full run leaves behind exactly the same artifacts a staged
+    run does, and the two paths cannot drift apart.
+    """
+    stages = STAGES[1:] if args.stage == "all" else [args.stage]
+
+    for chapter in chapters:
+        os.makedirs(chapter.output_dir, exist_ok=True)
+
+        for stage in stages:
+            try:
+                if stage == "ocr":
+                    await stage_ocr(chapter, args)
+                elif stage == "translate":
+                    await stage_translate(chapter, args)
+                else:
+                    await stage_draw(chapter, args)
+            except FileNotFoundError as missing:
+                print(f"{chapter.name}: {missing}")
+                break
 
 
 def main():
@@ -122,6 +256,19 @@ def main():
         "--files",
         nargs="+",
         help="Path to a folder of chapter folders, or a list of images",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--stage",
+        default="all",
+        choices=STAGES,
+        help="R|Which part of the pipeline to run\n"
+             "all) every stage, in order\n"
+             "ocr) steps 1-4, writes the cleaned pages and ocr.json\n"
+             "translate) step 5, writes translated.json from ocr.json\n"
+             "draw) step 6, draws translated.json onto the cleaned pages",
+        required=False,
     )
 
     parser.add_argument(
@@ -214,17 +361,7 @@ def main():
 
     print(f"Found {len(chapters)} chapter(s): {', '.join(c.name for c in chapters)}")
 
-    asyncio.run(do_convert(
-        chapters,
-        args.translator,
-        args.translator_args,
-        args.ocr,
-        args.ocr_args,
-        args.drawer,
-        args.drawer_args,
-        args.cleaner,
-        args.cleaner_args,
-    ))
+    asyncio.run(do_convert(chapters, args))
 
 
 if __name__ == "__main__":
