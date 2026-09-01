@@ -1005,13 +1005,34 @@ def read_image(path: str) -> Union[np.ndarray, None]:
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
-def write_image(path: str, frame: np.ndarray) -> bool:
+# The encoder setting each format calls "quality". Only the lossy ones have
+# one; PNG's compression level is a speed/size trade rather than a fidelity
+# one, so it is deliberately not reachable through the same argument.
+_QUALITY_FLAG = {
+    ".webp": cv2.IMWRITE_WEBP_QUALITY,
+    ".jpg": cv2.IMWRITE_JPEG_QUALITY,
+    ".jpeg": cv2.IMWRITE_JPEG_QUALITY,
+}
+
+
+def write_image(path: str, frame: np.ndarray, quality: Union[int, None] = None) -> bool:
     """cv2.imwrite that works with non ASCII paths, and that says when it failed.
 
     cv2.imwrite returns False rather than raising, so a whole chapter could be
     reported as written while nothing reached the disk.
+
+    `quality` is the encoder's own scale for whatever format the extension asks
+    for -- WebP and JPEG both take 0 to 100, and WebP reads anything above 100
+    as a request for lossless. It is ignored for a format that has no such
+    setting, so a caller can pass one without first knowing what it is writing.
     """
-    success, encoded = cv2.imencode(os.path.splitext(path)[1] or ".png", frame)
+    extension = os.path.splitext(path)[1] or ".png"
+    params = []
+
+    if quality is not None and (flag := _QUALITY_FLAG.get(extension.lower())):
+        params = [flag, int(quality)]
+
+    success, encoded = cv2.imencode(extension, frame, params)
 
     if not success:
         return False

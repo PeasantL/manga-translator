@@ -273,11 +273,23 @@ class ChapterDocument:
             pages=[Page.from_dict(p) for p in data.get("pages", [])],
         )
 
+    def to_json(self) -> bytes:
+        """The document as the bytes it is stored as, wherever it is stored.
+
+        The CLI writes these to a file next to the pages and the service packs
+        them into the archive itself, so the encoding is settled here rather
+        than at each of those -- a document that came out of a CBZ and one that
+        came out of an output folder have to be the same document.
+        """
+        return json.dumps(
+            self.to_dict(), ensure_ascii=False, indent=2
+        ).encode("utf-8")
+
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
 
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(self.to_dict(), file, ensure_ascii=False, indent=2)
+        with open(path, "wb") as file:
+            file.write(self.to_json())
 
     @classmethod
     def load(cls, path: str) -> "ChapterDocument":
@@ -288,3 +300,73 @@ class ChapterDocument:
 
         with open(path, "r", encoding="utf-8") as file:
             return cls.from_dict(json.load(file))
+
+
+def build_document(
+    chapter: str,
+    pages: list,
+    ocr_results: list,
+    names: list[str],
+    sources: list[str] = None,
+    clean_ext: str = ".png",
+) -> "ChapterDocument":
+    """Turn one chapter's pipeline output into the document that describes it.
+
+    `pages` are the PageLayouts stage 3 produced, in reading order, and
+    `ocr_results` is stage 4's flat list over all of them in that same order --
+    which is what lets the two be zipped back together here. Nothing is
+    translated yet; stage 5 fills that in afterwards.
+
+    Written here rather than at each caller because there are two of them, the
+    CLI and the service, and a document out of one has to be readable by the
+    other. They differ only in what the cleaned pages are called: the CLI keeps
+    lossless PNGs beside the output, and the service carries WebPs inside the
+    archive it hands back.
+
+    The cleaned pages are not written here. This decides what they are called,
+    the caller decides where they go -- a folder for one of them, an archive
+    inside an archive for the other.
+    """
+    document = ChapterDocument(chapter=chapter)
+    position = 0
+
+    for index, (name, page) in enumerate(zip(names, pages)):
+        regions = []
+
+        for box, (text_color, background_color) in zip(page.draw_boxes, page.colors):
+            # A region past the end of the OCR results is one the reader could
+            # not be run over -- an empty region rather than a missing one, so
+            # that the boxes still line up with what stage 6 will draw.
+            result = ocr_results[position] if position < len(ocr_results) else None
+            position += 1
+
+            regions.append(
+                Region(
+                    box=list(box),
+                    text=result.text if result is not None else "",
+                    language=result.language if result is not None else "",
+                    text_color=text_color,
+                    background_color=background_color,
+                )
+            )
+
+        height, width = page.frame.shape[:2]
+
+        document.pages.append(
+            Page(
+                name=name,
+                source=sources[index] if sources is not None else "",
+                clean=f"{CLEAN_DIR}/{os.path.splitext(name)[0]}{clean_ext}",
+                width=width,
+                height=height,
+                regions=regions,
+            )
+        )
+
+    # Whatever the reader made of the chapter. One language for the whole of it
+    # rather than per region: the OCR reports the one it was trained on, so the
+    # first answer is the only answer there is.
+    languages = [r.language for r in document.regions() if r.language]
+    document.source_language = languages[0] if languages else ""
+
+    return document

@@ -31,6 +31,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from translator import archive
+from translator.chapter import build_document
 from translator.pipeline import FullConversion
 from translator.plugins import DebugTranslator, DeepSeekTranslator, JapaneseOcr, OcrResult
 from translator.utils import read_image, write_image
@@ -58,6 +59,20 @@ TRANSLATOR = os.environ.get("TRANSLATOR", "deepseek").lower()
 # Read in chunks rather than with .read(): a chapter is tens of megabytes and
 # there is no reason for all of it to be resident at once.
 UPLOAD_CHUNK = 1024 * 1024
+
+# What the cleaned pages carried inside a result are written as.
+#
+# WebP rather than the lossless PNG the CLI leaves beside its output, because
+# these are not an intermediate on this machine: they go into the archive that
+# goes into somebody's library, and lossless would roughly double what a
+# chapter costs to keep. Nothing accumulates from it either -- a redraw always
+# starts from this same cleaned page, so however many times the lettering is
+# corrected, it is encoded once.
+#
+# Set CLEAN_QUALITY above 100 for lossless, if the disk is cheaper than the
+# doubt.
+CLEAN_EXT = ".webp"
+CLEAN_QUALITY = int(os.environ.get("CLEAN_QUALITY", "95"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -285,6 +300,22 @@ async def _translate_title(conversion: FullConversion, title: str) -> str:
     return results[0].text.strip() if results else ""
 
 
+def _write_pages(
+    job: dict, dest: Path, names: list[str], frames: list, quality: int | None = None
+) -> None:
+    """Write a chapter's worth of frames into a folder, saying what would not go.
+
+    A page that will not encode is dropped rather than fatal: the rest of the
+    chapter is fine, and the alternative is losing a finished translation to one
+    bad page.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for name, frame in zip(names, frames):
+        if not write_image(str(dest / name), frame, quality=quality):
+            log.warning("job %s: could not write %s", job["id"], name)
+
+
 def _convert(job: dict, source: Path, workdir: Path) -> Path:
     """Translate one CBZ, start to finish. Returns the path of the result.
 
@@ -309,6 +340,7 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
             job["regions"] = total
 
     pages_dir = workdir / "pages"
+    clean_dir = workdir / "clean"
     drawn_dir = workdir / "drawn"
 
     paths = archive.unpack(source, pages_dir)
@@ -326,6 +358,8 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
 
     job.update(pages=len(readable), stage="clean", detail=STAGE_DETAIL["clean"])
 
+    names = [path.name for path, _ in readable]
+
     conversion = get_pipeline()
     # Both swapped in per job rather than fixed at construction: the pipeline
     # outlives any one job, but a progress callback and the language being read
@@ -335,31 +369,64 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
     if hasattr(conversion.translator, "source_lang"):
         conversion.translator.source_lang = job["source_lang"]
 
-    async def convert() -> tuple[list, str]:
-        pages = await conversion([frame for _, frame in readable])
+    async def convert():
+        """Stages 1 to 6, one at a time rather than behind the whole-chapter call.
+
+        Run out here so that what passes between the stages can be kept. The
+        end-to-end call returns only the drawn pages, and the cleaned ones and
+        the dialogue are exactly what a correction later needs.
+        """
+        layouts, ocr_results = await conversion.clean_and_read(
+            [frame for _, frame in readable], names=names
+        )
+
+        document = build_document(
+            job["name"], layouts, ocr_results, names=names, clean_ext=CLEAN_EXT
+        )
+        # What the caller said it was and what this was told to produce, rather
+        # than what the OCR made of it -- the reader reports the one language
+        # it knows whatever it was shown, which is no answer at all.
+        document.source_language = job["source_lang"]
+        document.target_language = TARGET_LANG
+
+        # Written before stage 6 and not after, because stage 6 letters each
+        # page in place: once it has run, the cleaned frame and the drawn one
+        # are the same array.
+        _write_pages(job, clean_dir, [Path(p.clean).name for p in document.pages],
+                     [layout.frame for layout in layouts], quality=CLEAN_QUALITY)
+
+        translations = await conversion.translate_regions(ocr_results)
+
+        for region, translation in zip(document.regions(), translations):
+            region.translation = translation.text
+
+        frames = await conversion.render_pages(layouts, translations)
+
         job.update(stage="title", detail="translating the title")
-        return pages, await _translate_title(conversion, archive.source_title(comicinfo))
+        title = await _translate_title(conversion, archive.source_title(comicinfo))
+
+        return document, frames, title
 
     try:
-        frames, title = asyncio.run(convert())
+        document, frames, title = asyncio.run(convert())
     finally:
         conversion.progress = None
         if hasattr(conversion.translator, "source_lang"):
             conversion.translator.source_lang = was_source
 
-    drawn_dir.mkdir(parents=True, exist_ok=True)
-
-    for (path, _), frame in zip(readable, frames):
-        if not write_image(str(drawn_dir / path.name), frame):
-            log.warning("job %s: could not write %s", job["id"], path.name)
+    _write_pages(job, drawn_dir, names, frames)
 
     job.update(stage="pack", detail="building the archive")
+
+    clean_zip = workdir / "clean.zip"
+    archive.pack_clean(clean_dir, clean_zip)
 
     result_path = workdir / "result.cbz"
     archive.pack(
         drawn_dir,
         result_path,
         archive.translated_comicinfo(comicinfo, target_lang=TARGET_LANG, title=title),
+        extras={archive.CLEAN_ARCHIVE: clean_zip, archive.DOCUMENT: document.to_json()},
     )
 
     return result_path

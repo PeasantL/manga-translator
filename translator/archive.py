@@ -12,6 +12,7 @@ whoever packed the file -- `../../etc/passwd` is a valid zip entry. Never
 letting those names reach the filesystem removes both problems at once.
 """
 
+import json
 import posixpath
 import shutil
 import zipfile
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from translator.chapter import IMAGE_EXTENSIONS
+from translator.chapter import CLEAN_DIR, IMAGE_EXTENSIONS, ChapterDocument
 from translator.utils import natural_sort_key
 
 COMICINFO = "ComicInfo.xml"
@@ -27,6 +28,24 @@ COMICINFO = "ComicInfo.xml"
 # What a translated archive is tagged with, and what marks one as already done
 # so a library can tell the two apart without opening every file.
 TRANSLATED_TAG = "translated"
+
+# Where a translated archive carries what it took to make it: the pages with
+# the original text erased, and the document saying what was said in each
+# bubble and what it became. Together they are everything stage 6 needs, so
+# the lettering can be corrected and redrawn without the chapter going near a
+# model again -- and without needing the untranslated book still to be there.
+#
+# Under a folder named for this project, so it is obvious what wrote them.
+SIDECAR = "translator"
+DOCUMENT = f"{SIDECAR}/chapter.json"
+
+# The cleaned pages go in an archive of their own inside the outer one, and
+# that nesting is the whole reason this is safe to do. A comic reader decides
+# what the pages of a CBZ are by walking its entries and taking the images, at
+# whatever depth it finds them -- so cleaned pages sitting loose in here would
+# be counted as pages of the book, and every chapter would appear to have twice
+# as many as it does. Nothing descends into a nested zip.
+CLEAN_ARCHIVE = f"{SIDECAR}/clean.zip"
 
 
 def _is_page(name: str) -> bool:
@@ -40,6 +59,14 @@ def _is_page(name: str) -> bool:
     # as images; a leading dot is the other thing packers leave behind. Neither
     # is a page, and both would be drawn into the output if counted as one.
     if not base or base.startswith(".") or name.startswith("__MACOSX/"):
+        return False
+
+    # This project's own sidecar. Nothing in there is a page of the book, and
+    # the nesting above already keeps the cleaned pages out of reach -- but a
+    # translated archive gets unpacked again if someone translates it twice,
+    # and saying so here is what makes that safe however the sidecar is laid
+    # out later.
+    if name.startswith(f"{SIDECAR}/"):
         return False
 
     return posixpath.splitext(base)[1].lower() in IMAGE_EXTENSIONS
@@ -206,8 +233,19 @@ def translated_comicinfo(
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def pack(pages: Path, dest: Path, comicinfo: bytes | None = None) -> int:
-    """Zip a folder of finished pages into a CBZ. Returns the page count."""
+def pack(
+    pages: Path,
+    dest: Path,
+    comicinfo: bytes | None = None,
+    extras: dict[str, bytes | Path] | None = None,
+) -> int:
+    """Zip a folder of finished pages into a CBZ. Returns the page count.
+
+    `extras` are entries carried alongside the pages, given either as bytes or
+    as a file to copy in -- the sidecar, in practice. They are written under
+    the names they are keyed by, so it is the caller that decides a cleaned
+    page cannot be mistaken for a page of the book.
+    """
     found = sorted(
         (p for p in pages.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS),
         key=lambda p: natural_sort_key(p.name),
@@ -228,4 +266,105 @@ def pack(pages: Path, dest: Path, comicinfo: bytes | None = None) -> int:
             # The one entry here that is text, and the one worth compressing.
             archive.writestr(COMICINFO, comicinfo, compress_type=zipfile.ZIP_DEFLATED)
 
+        for name, content in (extras or {}).items():
+            if isinstance(content, (bytes, bytearray)):
+                archive.writestr(name, content, compress_type=zipfile.ZIP_DEFLATED)
+            else:
+                # A file rather than bytes is the inner archive, which is
+                # already as small as it is going to get.
+                archive.write(content, name, compress_type=zipfile.ZIP_STORED)
+
     return len(found)
+
+
+def pack_clean(pages: Path, dest: Path) -> int:
+    """Zip a folder of cleaned pages into the inner archive a CBZ carries.
+
+    Entries keep the `clean/` prefix the document refers to them by, so that one
+    document describes both the folder the CLI leaves behind and the archive the
+    service embeds. Returns the page count.
+    """
+    found = sorted(
+        (p for p in pages.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS),
+        key=lambda p: natural_sort_key(p.name),
+    )
+
+    if len(found) == 0:
+        raise ValueError(f"{pages} has no cleaned pages to pack")
+
+    with zipfile.ZipFile(dest, "w") as archive:
+        for page in found:
+            archive.write(
+                page, f"{CLEAN_DIR}/{page.name}", compress_type=zipfile.ZIP_STORED
+            )
+
+    return len(found)
+
+
+def read_document(cbz: Path) -> ChapterDocument | None:
+    """The chapter document a translated archive carries, if it has one.
+
+    None means there is nothing in there to read -- an archive from before this
+    was written, or one that never came from here. A document that is present
+    but unreadable raises instead: that is a different problem and deserves to
+    be said out loud rather than to look like an old file.
+    """
+    try:
+        with zipfile.ZipFile(cbz) as archive:
+            raw = archive.read(DOCUMENT)
+    except KeyError:
+        return None
+    except (zipfile.BadZipFile, OSError) as problem:
+        raise ValueError(f"{cbz.name} could not be opened: {problem}") from problem
+
+    try:
+        return ChapterDocument.from_dict(json.loads(raw))
+    except json.JSONDecodeError as problem:
+        raise ValueError(f"{cbz.name} has a chapter document that will not parse") from problem
+
+
+def extract_clean_archive(cbz: Path, dest: Path) -> Path | None:
+    """Copy the inner archive of cleaned pages out of a CBZ. None if it has none.
+
+    Copied to a file rather than read into memory: it holds every page of the
+    chapter, and a zip has to be seekable to be opened at all, which a stream
+    out of the archive around it is not.
+    """
+    with zipfile.ZipFile(cbz) as archive:
+        try:
+            entry = archive.open(CLEAN_ARCHIVE)
+        except KeyError:
+            return None
+
+        with entry, dest.open("wb") as out:
+            shutil.copyfileobj(entry, out)
+
+    return dest
+
+
+def unpack_clean(clean_zip: Path, dest: Path) -> dict[str, Path]:
+    """Extract cleaned pages into dest, keyed by the name a document finds them by.
+
+    Flattened onto the basename of each entry, for the reason the module
+    docstring gives: an entry name is written by whoever packed the file, and
+    `../../etc/passwd` is a valid one. A document's `clean` field is read the
+    same way, so the two still meet.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    found: dict[str, Path] = {}
+
+    with zipfile.ZipFile(clean_zip) as archive:
+        for name in archive.namelist():
+            base = posixpath.basename(name)
+
+            if not base or base.startswith("."):
+                continue
+
+            page = dest / base
+
+            with archive.open(name) as source, page.open("wb") as out:
+                shutil.copyfileobj(source, out)
+
+            found[base] = page
+
+    return found
