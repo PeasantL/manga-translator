@@ -246,7 +246,7 @@ project if you want to retrain.
 
 ## Examples
 
-`examples/raw` holds six sample pages, which is one chapter:
+`examples/raw` holds four sample pages, which is one chapter:
 
 ```bash
 python3 main.py -f examples/raw
