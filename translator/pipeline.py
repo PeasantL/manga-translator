@@ -84,6 +84,7 @@ async def draw_page(
                     frame=frame[y1:y2, x1:x2].copy(),
                     translation=translation,
                     backdrop=expanded,
+                    page_shape=frame.shape,
                 )
             )
 

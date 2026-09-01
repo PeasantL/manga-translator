@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Union
 
 class BasePlugin:
     def __init__(self) -> None:
@@ -65,6 +66,7 @@ class Drawable:
         translation: TranslatorResult,
         frame: np.ndarray,
         backdrop: bool = False,
+        page_shape: Union[tuple, None] = None,
     ) -> None:
         self.color = color
         self.translation = translation
@@ -72,6 +74,12 @@ class Drawable:
         # Set when the text did not fit its bubble and is being drawn over
         # artwork instead, so the drawer knows to put something behind it.
         self.backdrop = backdrop
+        # The whole page this region was cut out of. A drawer needs it because
+        # a readable size is a fraction of the page rather than a count of
+        # pixels: the same chapter is scanned at anything from 800 to 2400
+        # pixels high, and lettering has to follow that or it is fine print on
+        # one scan and a headline on the next.
+        self.page_shape = page_shape
 
 class Drawer(BasePlugin):
     def __init__(self) -> None:
