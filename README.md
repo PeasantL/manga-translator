@@ -219,15 +219,21 @@ over an already-translated file adds none of them twice.
 
 ### API keys
 
-The translation backend needs credentials. The web UI has a field for the key;
-`server.py` and `main.py` both read a `.env` file in the repository root:
+The translation backend needs credentials. Copy the template and fill it in:
 
-```
-DEEPSEEK_API_KEY=...
+```bash
+cp .env.example .env      # then set DEEPSEEK_API_KEY
 ```
 
-The `Custom Text` translator writes a fixed string into every bubble and needs
-no key — useful for checking detection, cleaning and drawing on their own.
+One file covers every way of running this. `main.py`, `server.py` and
+`service.py` all load it directly, and `docker compose` reads the same file to
+fill in `docker-compose.yml`. It is gitignored; `.env.example` is the copy that
+is checked in.
+
+Only translating needs the key. Detection, cleaning, OCR and lettering all run
+without one, so `-s ocr` works on an empty key — as does the `Custom Text`
+translator, which writes a fixed string into every bubble and is how to check
+those stages on their own. The service reaches it as `TRANSLATOR=debug`.
 
 ## Datasets
 
