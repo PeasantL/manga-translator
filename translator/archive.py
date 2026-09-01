@@ -143,7 +143,6 @@ def source_title(original: bytes | None) -> str:
 def translated_comicinfo(
     original: bytes | None,
     target_lang: str = "en",
-    title_suffix: str = "[EN]",
     title: str = "",
 ) -> bytes:
     """The source's ComicInfo, rewritten to describe the translation.
@@ -154,8 +153,12 @@ def translated_comicinfo(
 
     A `title` replaces the original outright -- the dialogue is in English now,
     so a Japanese title on the shelf beside it helps nobody. Without one the
-    original is kept and only marked, which is what happens when there was
-    nothing to translate or translating it failed.
+    original is kept as it was, which is what happens when there was nothing to
+    translate or translating it failed.
+
+    Nothing is appended to say this is a translation. LanguageISO already says
+    so, and a reader that shows the language has no use for the same fact
+    spelled out again in the title.
 
     Built through ElementTree rather than string edits so that a title with an
     ampersand in it cannot produce a file Komga refuses to parse.
@@ -174,19 +177,9 @@ def translated_comicinfo(
         root = ET.Element("ComicInfo")
         root.set("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
 
-    for tag in ("Title", "Series"):
-        node = _child(root, tag) if title else root.find(tag)
-
-        if node is None:
-            continue
-
-        if title:
-            node.text = title
-
-        # Guarded on the suffix already being there so that translating a file
-        # twice does not produce "Name [EN] [EN]".
-        if node.text and title_suffix not in node.text:
-            node.text = f"{node.text} {title_suffix}"
+    if title:
+        for tag in ("Title", "Series"):
+            _child(root, tag).text = title
 
     _child(root, "LanguageISO").text = target_lang
 
