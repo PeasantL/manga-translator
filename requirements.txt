@@ -1,11 +1,23 @@
 # Core runtime
 numpy>=1.26.2,<2.0
+# Headless because nothing here opens a window, and the full build wants libGL.
+# Note that ultralytics depends on plain opencv-python and will pull it in
+# anyway; the two unpack into the same cv2 directory and the full one wins the
+# import. Removing it afterwards takes the module with it, so an environment
+# that must stay headless has to uninstall both and reinstall this one. The
+# Dockerfile does exactly that.
 opencv-python-headless>=4.8.1.78,<5.0
 # Capped below 10.0 by simple-lama-inpainting, which pins pillow<10.0.0.
 pillow>=9.5.0,<10.0
 requests>=2.31.0,<3.0
 python-dotenv>=1.0.0,<2.0
 tornado>=6.3.3,<7.0
+
+# service.py, the job API. python-multipart backs its file upload; FastAPI
+# raises at import without it.
+fastapi>=0.115.0,<1.0
+uvicorn>=0.32.0,<1.0
+python-multipart>=0.0.9,<1.0
 
 # Torch stack. Declared explicitly rather than relied on as an ultralytics
 # transitive. For CUDA builds install these first from the PyTorch index, e.g.

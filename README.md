@@ -163,6 +163,60 @@ The UI is a React app in `ui/`. To rebuild it after changing the source:
 cd ui && npm install && npm run build
 ```
 
+### As a service
+
+`service.py` is the other way in. Where `server.py` is a person converting one
+image at a time, this takes a whole chapter as a CBZ and hands back a translated
+CBZ — which takes minutes, far too long to hold a request open for, so
+submitting one starts a job:
+
+```bash
+docker compose up -d                                    # or: uvicorn service:app --port 1007
+
+curl -X POST localhost:1007/jobs -F file=@chapter.cbz   # -> {"id": "...", "state": "running"}
+curl localhost:1007/jobs/current                        # poll: stage, done/total
+curl -o out.cbz localhost:1007/jobs/<id>/result         # once state is "done"
+curl -X DELETE localhost:1007/jobs/<id>                 # collected, drop it
+```
+
+| Route | Does |
+|-------|------|
+| `POST /jobs` | multipart `file` (a CBZ) and optional `name`. 409 while one is running |
+| `GET /jobs/current` | the job record, or `{"state": "idle"}` |
+| `GET /jobs/{id}` | the same, by id |
+| `GET /jobs/{id}/result` | the translated CBZ. 409 unless the job is done |
+| `DELETE /jobs/{id}` | drop the job and its files |
+| `GET /healthz` | device, whether the weights are present, whether it is busy |
+
+One job runs at a time: there is one GPU and the models are process-global, so a
+second chapter running alongside would only make both slower.
+
+This process holds the job, and goes on holding it after it finishes. Whoever
+submitted a chapter can go away, restart, and come back to find the finished
+file still waiting — which is what lets the caller keep no state of its own. The
+conversion runs on a worker thread, because detection, inpainting and OCR each
+block for seconds at a time and on the main loop they would stall the very
+endpoint the caller is polling to watch them.
+
+Pages are extracted under sequential names rather than the archive's own. An
+archive's names sort lexically wherever something else reads them, so `10.webp`
+lands before `2.webp` and the chapter comes out in the wrong order; and an entry
+name is written by whoever packed the file, so `../../etc/passwd` is a valid
+one. Renaming on the way in settles both.
+
+The source's `ComicInfo.xml` is carried across with its artist, tags and origin
+intact — the translation is the same book — and only what is no longer true
+changes: `LanguageISO`, a `translated` tag, and ` [EN]` on the title. Running it
+over an already-translated file adds none of them twice.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `1007` | Port to listen on |
+| `TARGET_LANG` | `en` | What to translate into |
+| `TRANSLATOR` | `deepseek` | `debug` letters a fixed string instead, and needs no API key |
+| `JOB_DIR` | `jobs` | Scratch for the chapter in flight. Cleared at startup |
+| `MODELS_DIR` | `models` | Where `fetch_models.sh` puts the YOLO weights |
+
 ### API keys
 
 The translation backend needs credentials. The web UI has a field for the key;
@@ -200,10 +254,14 @@ the result depends on which model and target language you translate with.
 ```
 main.py                     the CLI
 server.py                   the web UI's backend
+service.py                  the job API: a CBZ in, a translated CBZ out
 run.sh                      venv, dependencies, then every chapter in input/
 fetch_models.sh             downloads the YOLO weights into models/
+Dockerfile                  CUDA image for the service
+docker-compose.yml          the service, with the weights and caches as volumes
 translator/
     chapter.py              what a chapter is, and the JSON passed between stages
+    archive.py              CBZ to chapter folder and back, and ComicInfo
     pipeline.py             the six stages, wired together
     utils.py                image, text layout and colour helpers
     plugins/
