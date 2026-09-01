@@ -29,6 +29,18 @@ COMICINFO = "ComicInfo.xml"
 # so a library can tell the two apart without opening every file.
 TRANSLATED_TAG = "translated"
 
+# And the same fact as a genre, which is not a duplicate of it.
+#
+# A library reading ComicInfo files the two fields in different places: Tags
+# describe the book and Genre describes the work, so in Komga the tag lands on
+# the book record and the genre on the series wrapping it. A shelf of covers is
+# series -- the books are a click further in -- so the tag alone is invisible
+# at exactly the place a "this one is the translation" mark is worth having.
+#
+# Title case because a genre is displayed as written, alongside the ones the
+# book came with.
+TRANSLATED_GENRE = "Translated"
+
 # Where a translated archive carries what it took to make it: the pages with
 # the original text erased, and the document saying what was said in each
 # bubble and what it became. Together they are everything stage 6 needs, so
@@ -187,6 +199,11 @@ def translated_comicinfo(
     so, and a reader that shows the language has no use for the same fact
     spelled out again in the title.
 
+    That it is one is said twice elsewhere, in Tags and in Genre, and those are
+    not a duplicate of each other: a library reading this files the two in
+    different places, so which of them can be seen depends on where you are
+    looking from. See TRANSLATED_GENRE.
+
     Built through ElementTree rather than string edits so that a title with an
     ampersand in it cannot produce a file Komga refuses to parse.
     """
@@ -216,6 +233,13 @@ def translated_comicinfo(
         tags.append(TRANSLATED_TAG)
 
     _child(root, "Tags").text = ", ".join(tags)
+
+    genres = _csv_field(root, "Genre")
+
+    if TRANSLATED_GENRE.lower() not in [g.lower() for g in genres]:
+        genres.append(TRANSLATED_GENRE)
+
+    _child(root, "Genre").text = ", ".join(genres)
 
     # Appended rather than replaced: Notes is where the download recorded which
     # gallery this came from, and that is still true of the translation.

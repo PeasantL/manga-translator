@@ -199,6 +199,13 @@ curl -X DELETE localhost:1007/jobs/<id>                 # collected, drop it
 One job runs at a time: there is one GPU and the models are process-global, so a
 second chapter running alongside would only make both slower.
 
+The result's ComicInfo says it is a translation twice, and those are not
+duplicates of each other. `Tags` gets `translated` and `Genre` gets
+`Translated`, because a library reading ComicInfo files the two in different
+places — Tags describe the book, Genre describes the work, so in Komga the tag
+lands on the book record and the genre on the series wrapping it. Which one is
+visible depends on where you are looking from, and a shelf of covers is series.
+
 #### Correcting a translation
 
 A translated CBZ carries what it took to make it, under `translator/` inside the
