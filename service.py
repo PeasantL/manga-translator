@@ -40,6 +40,15 @@ log = logging.getLogger("translator.service")
 JOB_DIR = Path(os.environ.get("JOB_DIR", "jobs"))
 TARGET_LANG = os.environ.get("TARGET_LANG", "en")
 
+# What to assume a chapter is in when the caller does not say. A caller that
+# knows -- a library holding the book's own LanguageISO -- sends it per job and
+# overrides this; the prompt is picked from whichever it ends up being.
+#
+# Note that the OCR is manga-ocr and reads Japanese only, so a non-Japanese
+# source currently gets the right prompt applied to text the reader could not
+# make out. The prompt and the plumbing are here ahead of an OCR that can.
+SOURCE_LANG = os.environ.get("SOURCE_LANG", "ja")
+
 # "debug" writes a fixed string into every bubble and needs no API key, which
 # is how detection, cleaning and lettering get exercised on their own -- worth
 # having as a setting because it is also how this service is smoke tested.
@@ -125,6 +134,11 @@ async def healthz():
         "loaded": _pipeline is not None,
         "busy": _job is not None and _job["state"] == "running",
         "target_lang": TARGET_LANG,
+        "source_lang": SOURCE_LANG,
+        # Which sources the OCR can actually read, as opposed to which ones a
+        # prompt exists for. A caller worth the name checks this before
+        # sending something the reader will only turn into noise.
+        "reads": list(JapaneseOcr.READS),
     }
 
 
@@ -143,7 +157,9 @@ async def one_job(job_id: str):
 
 
 @app.post("/jobs")
-async def submit(file: UploadFile = File(...), name: str = Form("")):
+async def submit(
+    file: UploadFile = File(...), name: str = Form(""), source_lang: str = Form("")
+):
     """Take a CBZ and start translating it.
 
     A finished job that nobody collected is replaced rather than protected: the
@@ -158,13 +174,25 @@ async def submit(file: UploadFile = File(...), name: str = Form("")):
     if _job:
         shutil.rmtree(_job["_dir"], ignore_errors=True)
 
+    source = (source_lang or SOURCE_LANG).strip().lower()
+
+    if source not in JapaneseOcr.READS:
+        # Not refused: the prompt for it exists and the rest of the pipeline
+        # runs, so this is a warning about the quality of the result rather
+        # than a reason not to produce one.
+        log.warning(
+            "job asked for %s, which the OCR cannot read -- it reads %s only",
+            source,
+            ", ".join(sorted(JapaneseOcr.READS)),
+        )
+
     job_id = uuid.uuid4().hex
     workdir = JOB_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
-    source = workdir / "source.cbz"
+    source_cbz = workdir / "source.cbz"
 
     try:
-        with source.open("wb") as out:
+        with source_cbz.open("wb") as out:
             while chunk := await file.read(UPLOAD_CHUNK):
                 out.write(chunk)
     except Exception:
@@ -174,6 +202,7 @@ async def submit(file: UploadFile = File(...), name: str = Form("")):
     _job = {
         "id": job_id,
         "name": name or file.filename or job_id,
+        "source_lang": source,
         "state": "running",
         "stage": "unpack",
         "done": 0,
@@ -189,7 +218,7 @@ async def submit(file: UploadFile = File(...), name: str = Form("")):
 
     # Detached rather than awaited: the request would otherwise stay open for
     # the whole chapter, which is the thing this API exists to avoid.
-    asyncio.create_task(_run(_job, source, workdir))
+    asyncio.create_task(_run(_job, source_cbz, workdir))
 
     return _public(_job)
 
@@ -298,9 +327,13 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
     job.update(pages=len(readable), stage="clean", detail=STAGE_DETAIL["clean"])
 
     conversion = get_pipeline()
-    # Swapped in per job rather than fixed at construction, because the
-    # pipeline outlives any one job but a progress callback belongs to one.
+    # Both swapped in per job rather than fixed at construction: the pipeline
+    # outlives any one job, but a progress callback and the language being read
+    # both belong to one. The language picks the prompt.
     conversion.progress = report
+    was_source = getattr(conversion.translator, "source_lang", "")
+    if hasattr(conversion.translator, "source_lang"):
+        conversion.translator.source_lang = job["source_lang"]
 
     async def convert() -> tuple[list, str]:
         pages = await conversion([frame for _, frame in readable])
@@ -311,6 +344,8 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
         frames, title = asyncio.run(convert())
     finally:
         conversion.progress = None
+        if hasattr(conversion.translator, "source_lang"):
+            conversion.translator.source_lang = was_source
 
     drawn_dir.mkdir(parents=True, exist_ok=True)
 

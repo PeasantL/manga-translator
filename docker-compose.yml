@@ -14,6 +14,9 @@ services:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - TRANSLATOR=${TRANSLATOR:-deepseek}
       - TARGET_LANG=${TARGET_LANG:-en}
+      # What to assume a chapter is in when the caller does not say. A caller
+      # that knows sends it per job and overrides this.
+      - SOURCE_LANG=${SOURCE_LANG:-ja}
     volumes:
       # The YOLO weights, fetched on first boot. A volume rather than part of
       # the image so that rebuilding does not re-download 258 MB.

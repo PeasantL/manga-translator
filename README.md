@@ -173,7 +173,8 @@ submitting one starts a job:
 ```bash
 docker compose up -d                                    # or: uvicorn service:app --port 1007
 
-curl -X POST localhost:1007/jobs -F file=@chapter.cbz   # -> {"id": "...", "state": "running"}
+curl -X POST localhost:1007/jobs -F file=@chapter.cbz \
+     -F source_lang=zh                                  # -> {"id": "...", "state": "running"}
 curl localhost:1007/jobs/current                        # poll: stage, done/total
 curl -o out.cbz localhost:1007/jobs/<id>/result         # once state is "done"
 curl -X DELETE localhost:1007/jobs/<id>                 # collected, drop it
@@ -181,12 +182,12 @@ curl -X DELETE localhost:1007/jobs/<id>                 # collected, drop it
 
 | Route | Does |
 |-------|------|
-| `POST /jobs` | multipart `file` (a CBZ) and optional `name`. 409 while one is running |
+| `POST /jobs` | multipart `file` (a CBZ), optional `name` and `source_lang`. 409 while one is running |
 | `GET /jobs/current` | the job record, or `{"state": "idle"}` |
 | `GET /jobs/{id}` | the same, by id |
 | `GET /jobs/{id}/result` | the translated CBZ. 409 unless the job is done |
 | `DELETE /jobs/{id}` | drop the job and its files |
-| `GET /healthz` | device, whether the weights are present, whether it is busy |
+| `GET /healthz` | device, whether the weights are present, whether it is busy, and which sources the OCR `reads` |
 
 One job runs at a time: there is one GPU and the models are process-global, so a
 second chapter running alongside would only make both slower.
@@ -204,6 +205,32 @@ lands before `2.webp` and the chapter comes out in the wrong order; and an entry
 name is written by whoever packed the file, so `../../etc/passwd` is a valid
 one. Renaming on the way in settles both.
 
+#### What it reads
+
+`source_lang` on a job says what the pages are in, and it picks the prompt the
+chapter is translated with. There is one per source rather than one prompt
+naming a language, because what a translator needs telling differs by more than
+the language does:
+
+| Source | The prompt asks for |
+|---|---|
+| `ja` | Japanese given-name order, Hepburn romanisation, honorifics kept attached to names, kana sound effects as English sound words |
+| `zh` | pinyin without tone marks and surname first, Chinese forms of address rather than invented Japanese honorifics, chengyu as English idiom, no pinyin left in the output |
+
+Anything else falls back to a generic comics prompt rather than failing.
+
+The caller sends it because this process cannot work it out: the OCR reports
+the one language it was trained on whatever it was given. `SOURCE_LANG` is only
+the default for a caller that says nothing.
+
+> **The OCR reads Japanese only.** manga-ocr is trained on Japanese manga and
+> turns anything else into plausible-looking Japanese nonsense — which is worse
+> than an empty bubble, because it then translates cleanly. The prompts and the
+> plumbing around them are in place ahead of a reader that can use them; a
+> `zh` job today gets the right prompt applied to whatever manga-ocr made of
+> the text, and logs a warning saying so. `GET /healthz` reports what the OCR
+> actually `reads`, which is what a caller should check.
+
 The source's `ComicInfo.xml` is carried across with its artist, tags and origin
 intact — the translation is the same book — and only what is no longer true
 changes: `LanguageISO`, a `translated` tag, and ` [EN]` on the title. Running it
@@ -213,6 +240,7 @@ over an already-translated file adds none of them twice.
 |---|---|---|
 | `PORT` | `1007` | Port to listen on |
 | `TARGET_LANG` | `en` | What to translate into |
+| `SOURCE_LANG` | `ja` | What to read a chapter as when the caller does not say. Picks the prompt |
 | `TRANSLATOR` | `deepseek` | `debug` letters a fixed string instead, and needs no API key |
 | `JOB_DIR` | `jobs` | Scratch for the chapter in flight. Cleared at startup |
 | `MODELS_DIR` | `models` | Where `fetch_models.sh` puts the YOLO weights |
