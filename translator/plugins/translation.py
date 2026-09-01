@@ -17,9 +17,10 @@ from translator.plugins.base import (
 # for a new entry.
 NUMBERED_LINE = re.compile(r"^\s*(\d+)\s*[.):\]]\s*(.*)$")
 
-SYSTEM_PROMPT = (
-    "You translate manga. You are given the dialogue of one chapter as numbered "
-    "lines, in reading order.\n\n"
+# What every prompt says, whatever the source. The shape of the request and the
+# shape of the reply do not depend on the language being read, and only the
+# reply format keeps the numbering that puts each line back in its own bubble.
+_COMMON_PROMPT = (
     "Use the whole list for context: who is speaking, the tone, running jokes, "
     "names, and sentences that continue from one bubble into the next. Keep names "
     "and terms consistent across the chapter.\n\n"
@@ -35,6 +36,50 @@ SYSTEM_PROMPT = (
     "translation per line. If a line cannot be translated, repeat it unchanged "
     "after its number."
 )
+
+# The opening of the prompt, which is the part that says what is being read.
+# Separate prompts per source rather than one that names the language, because
+# what a translator needs telling differs by more than the language does: the
+# conventions that survive into English, and the ones that must not, are not
+# the same for a Japanese manga as for a Chinese manhua.
+_SOURCE_PROMPTS = {
+    "ja": (
+        "You translate Japanese manga into {target}. You are given the dialogue "
+        "of one chapter as numbered lines, in reading order.\n\n"
+        "Keep Japanese given-name order and romanise names in Hepburn. Keep "
+        "honorifics (-san, -kun, -chan, -sama, senpai) attached to names rather "
+        "than translating them into English forms of address, and keep the "
+        "register they imply. Sound effects and interjections written in kana "
+        "become English sound words, not romaji.\n\n"
+    ),
+    "zh": (
+        "You translate Chinese manhua into {target}. You are given the dialogue "
+        "of one chapter as numbered lines, in reading order. The text may be "
+        "simplified or traditional; read either.\n\n"
+        "Romanise names in pinyin without tone marks, surname first, and keep "
+        "that order throughout. Do not invent Japanese honorifics -- render "
+        "Chinese forms of address (\u54e5, \u59d0, \u524d\u8f88, \u5e08\u5085, and the rest) as the English "
+        "a speaker would actually use, or as part of the name where that reads "
+        "better, and keep the relative status they carry. Chengyu and other set "
+        "phrases become the nearest natural English idiom rather than a literal "
+        "gloss; leave no pinyin in the output.\n\n"
+    ),
+}
+
+# What to read anything else as. Every source this OCRs is one of the above, so
+# this is only reached when a caller names something unexpected -- better a
+# working generic prompt than a KeyError in the middle of a chapter.
+_GENERIC_PROMPT = (
+    "You translate comics into {target}. You are given the dialogue of one "
+    "chapter as numbered lines, in reading order.\n\n"
+)
+
+
+def system_prompt(source_lang: str, target_lang: str = "en") -> str:
+    """The prompt for reading this language, plus the rules common to all of them."""
+    opening = _SOURCE_PROMPTS.get((source_lang or "").lower(), _GENERIC_PROMPT)
+
+    return opening.format(target=(target_lang or "en").upper()) + _COMMON_PROMPT
 
 
 def console_safe(text: str) -> str:
@@ -68,6 +113,7 @@ class DeepSeekTranslator(Translator):
         self,
         api_key="",
         target_lang="en",
+        source_lang="",
         model=MODELS[0][1],
         temp="1.3",
         max_lines="200",
@@ -88,6 +134,11 @@ class DeepSeekTranslator(Translator):
             else None
         )
         self.target_lang = target_lang
+        # What the pages are in. Left empty to go by what the OCR reported,
+        # which is all the CLI has to go on; a caller that knows better -- a
+        # library that has the book's own LanguageISO -- sets it and wins,
+        # because the OCR only ever reports the one language it can read.
+        self.source_lang = (source_lang or "").strip().lower()
         self.model = model
         self.temp = float(temp)
         self.max_lines = max(1, int(max_lines))
@@ -129,7 +180,7 @@ class DeepSeekTranslator(Translator):
     async def translate_chunk(
         self, chunk: list[tuple[int, OcrResult]], previous: list[tuple[str, str]]
     ) -> list[str]:
-        source_lang = chunk[0][1].language or "ja"
+        source_lang = self.source_lang or chunk[0][1].language or "ja"
 
         request = (
             f"Translate from {source_lang.upper()} to {self.target_lang.upper()}.\n\n"
@@ -148,7 +199,7 @@ class DeepSeekTranslator(Translator):
         )
         request += f"Translate these {len(chunk)} lines:\n{numbered}"
 
-        reply = await self.ask(request)
+        reply = await self.ask(request, source_lang)
         by_position = self.parse_numbered(reply)
 
         translated = []
@@ -184,9 +235,12 @@ class DeepSeekTranslator(Translator):
             "max_tokens": self.max_tokens,
         }
 
-    async def ask(self, content: str) -> str:
+    async def ask(self, content: str, source_lang: str = "") -> str:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": system_prompt(source_lang or self.source_lang, self.target_lang),
+            },
             {"role": "user", "content": content},
         ]
 
@@ -307,6 +361,14 @@ class DeepSeekTranslator(Translator):
                 description="The language to translate to",
                 options=options,
                 default="en",
+            ),
+            PluginSelectArgument(
+                id="source_lang",
+                name="Source Language",
+                description="What the pages are in. Leave unset to go by what "
+                "the OCR reports",
+                options=[PluginSelectArgumentOption("From the OCR", "")] + options,
+                default="",
             ),
             PluginSelectArgument(
                 id="model",

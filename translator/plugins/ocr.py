@@ -14,6 +14,12 @@ _pipelines = {}
 class JapaneseOcr(Ocr):
     """Only Supports Japanese"""
 
+    # Stated rather than implied so a caller can ask before sending a chapter
+    # this cannot read. manga-ocr is trained on Japanese manga and turns
+    # anything else into plausible-looking Japanese nonsense, which is worse
+    # than an empty bubble because it translates cleanly.
+    READS = frozenset({"ja"})
+
     def __init__(self,model='TareHimself/manga-ocr-base') -> None:
         super().__init__()
 
