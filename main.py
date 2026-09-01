@@ -14,11 +14,9 @@ from translator.plugins import (
 )
 from translator.chapter import (
     find_chapters,
+    build_document,
     Chapter,
     ChapterDocument,
-    Page,
-    Region,
-    CLEAN_DIR,
 )
 from translator.plugins import OcrResult, TranslatorResult
 from translator.utils import read_image, write_image
@@ -116,50 +114,26 @@ async def stage_ocr(chapter: Chapter, args):
 
     os.makedirs(chapter.clean_dir, exist_ok=True)
 
-    document = ChapterDocument(chapter=chapter.name)
-    position = 0
+    # Always PNG here, whatever the source was. The cleaned page is an
+    # intermediate that gets read back and drawn on, and beside the output
+    # folder there is no reason for it to be anything but lossless -- unlike
+    # the copy the service carries inside an archive it hands to a library,
+    # where the size of it is somebody else's disk.
+    document = build_document(
+        chapter.name,
+        pages,
+        ocr_results,
+        names=[os.path.basename(path) for path, _ in loaded],
+        sources=[path.replace("\\", "/") for path, _ in loaded],
+        clean_ext=".png",
+    )
 
-    for (path, _), page in zip(loaded, pages):
-        name = os.path.basename(path)
-        # Always PNG, whatever the source was. The cleaned page is an
-        # intermediate that gets read back and drawn on, so it must not lose
-        # anything to JPEG on the way through.
-        clean_name = os.path.splitext(name)[0] + ".png"
-        clean_relative = f"{CLEAN_DIR}/{clean_name}"
+    for page, layout in zip(document.pages, pages):
+        clean_path = os.path.join(chapter.output_dir, page.clean)
 
-        clean_path = os.path.join(chapter.output_dir, CLEAN_DIR, clean_name)
-
-        if not write_image(clean_path, page.frame):
+        if not write_image(clean_path, layout.frame):
             print(f"{chapter.name}: could not write {clean_path}")
 
-        regions = []
-        for box, (text_color, background_color) in zip(page.draw_boxes, page.colors):
-            result = ocr_results[position] if position < len(ocr_results) else OcrResult()
-            position += 1
-            regions.append(
-                Region(
-                    box=list(box),
-                    text=result.text,
-                    language=result.language,
-                    text_color=text_color,
-                    background_color=background_color,
-                )
-            )
-
-        height, width = page.frame.shape[:2]
-        document.pages.append(
-            Page(
-                name=name,
-                source=path.replace("\\", "/"),
-                clean=clean_relative,
-                width=width,
-                height=height,
-                regions=regions,
-            )
-        )
-
-    languages = [r.language for r in document.regions() if r.language]
-    document.source_language = languages[0] if languages else ""
     document.save(chapter.ocr_path)
 
     print(
