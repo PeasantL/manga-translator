@@ -15,12 +15,14 @@ second chapter running concurrently would only make both slower.
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,9 +33,16 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from translator import archive
-from translator.chapter import build_document
-from translator.pipeline import FullConversion
-from translator.plugins import DebugTranslator, DeepSeekTranslator, JapaneseOcr, OcrResult
+from translator.chapter import ChapterDocument, build_document
+from translator.pipeline import FullConversion, draw_page
+from translator.plugins import (
+    DebugTranslator,
+    DeepSeekTranslator,
+    HorizontalDrawer,
+    JapaneseOcr,
+    OcrResult,
+    TranslatorResult,
+)
 from translator.utils import read_image, write_image
 
 log = logging.getLogger("translator.service")
@@ -171,11 +180,8 @@ async def one_job(job_id: str):
     return _public(_job)
 
 
-@app.post("/jobs")
-async def submit(
-    file: UploadFile = File(...), name: str = Form(""), source_lang: str = Form("")
-):
-    """Take a CBZ and start translating it.
+def _claim() -> tuple[str, Path]:
+    """Take the one job slot and hand back an id and a folder to work in.
 
     A finished job that nobody collected is replaced rather than protected: the
     caller polls, and one that has stopped polling long enough to submit
@@ -184,10 +190,68 @@ async def submit(
     global _job
 
     if _job and _job["state"] == "running":
-        raise HTTPException(status_code=409, detail="a translation is already running")
+        raise HTTPException(status_code=409, detail="a job is already running")
 
     if _job:
         shutil.rmtree(_job["_dir"], ignore_errors=True)
+        # Cleared rather than left pointing at a folder that is no longer
+        # there, because the upload that follows is awaited and anything
+        # polling during it would otherwise be told about a result it could
+        # not collect.
+        _job = None
+
+    job_id = uuid.uuid4().hex
+    workdir = JOB_DIR / job_id
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    return job_id, workdir
+
+
+async def _receive(file: UploadFile, dest: Path) -> None:
+    """Stream an upload to disk, taking its work folder down with it if it fails."""
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(UPLOAD_CHUNK):
+                out.write(chunk)
+    except Exception:
+        shutil.rmtree(dest.parent, ignore_errors=True)
+        raise
+
+
+def _record(job_id: str, workdir: Path, kind: str, name: str, filename: str, **extra) -> dict:
+    """The job as it starts out. What both kinds have in common, plus theirs."""
+    return {
+        "id": job_id,
+        "kind": kind,
+        "name": name,
+        "state": "running",
+        "stage": "unpack",
+        "done": 0,
+        "total": 0,
+        "detail": "opening the archive",
+        "pages": 0,
+        "regions": 0,
+        "started": _now(),
+        "finished": None,
+        "_dir": workdir,
+        "_result": None,
+        # What the finished file is called when it is collected. Decided here
+        # because only the endpoint that started the job knows: a translation
+        # is a new book and gets a new name, a redraw replaces one and keeps
+        # the name it arrived with.
+        "_filename": filename,
+        **extra,
+    }
+
+
+@app.post("/jobs")
+async def submit(
+    file: UploadFile = File(...), name: str = Form(""), source_lang: str = Form("")
+):
+    """Take a CBZ and start translating it."""
+    global _job
+
+    job_id, workdir = _claim()
 
     source = (source_lang or SOURCE_LANG).strip().lower()
 
@@ -201,39 +265,79 @@ async def submit(
             ", ".join(sorted(JapaneseOcr.READS)),
         )
 
-    job_id = uuid.uuid4().hex
-    workdir = JOB_DIR / job_id
-    workdir.mkdir(parents=True, exist_ok=True)
     source_cbz = workdir / "source.cbz"
+    await _receive(file, source_cbz)
 
-    try:
-        with source_cbz.open("wb") as out:
-            while chunk := await file.read(UPLOAD_CHUNK):
-                out.write(chunk)
-    except Exception:
-        shutil.rmtree(workdir, ignore_errors=True)
-        raise
+    chapter = name or file.filename or job_id
 
-    _job = {
-        "id": job_id,
-        "name": name or file.filename or job_id,
-        "source_lang": source,
-        "state": "running",
-        "stage": "unpack",
-        "done": 0,
-        "total": 0,
-        "detail": "opening the archive",
-        "pages": 0,
-        "regions": 0,
-        "started": _now(),
-        "finished": None,
-        "_dir": workdir,
-        "_result": None,
-    }
+    _job = _record(
+        job_id,
+        workdir,
+        kind="translate",
+        name=chapter,
+        filename=f"{Path(chapter).stem} [{TARGET_LANG.upper()}].cbz",
+        source_lang=source,
+    )
 
     # Detached rather than awaited: the request would otherwise stay open for
     # the whole chapter, which is the thing this API exists to avoid.
-    asyncio.create_task(_run(_job, source_cbz, workdir))
+    asyncio.create_task(
+        _run(_job, partial(_convert, _job, source_cbz, workdir), "translated")
+    )
+
+    return _public(_job)
+
+
+@app.post("/jobs/redraw")
+async def redraw(
+    file: UploadFile = File(...), name: str = Form(""), document: str = Form("")
+):
+    """Letter a translation again, optionally from a corrected document.
+
+    Takes a CBZ this service produced -- one carrying the cleaned pages and the
+    chapter document -- and gives back the same book with stage 6 run over it
+    again. Nothing is detected, cleaned, read or translated, so no model is
+    loaded and a correction comes back in seconds.
+
+    `document` is the whole chapter document with the lines edited. Sent whole
+    rather than as a patch because the boxes and the measured colours in it are
+    not the caller's to change, and a merge is the only other way to say so.
+    Left out, the archive is simply drawn again from what it already carries.
+    """
+    global _job
+
+    edited = None
+
+    if document:
+        # Parsed before the job is taken, so that a document this build cannot
+        # read is a refused request rather than a job that fails a moment later.
+        try:
+            edited = ChapterDocument.from_dict(json.loads(document))
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as problem:
+            raise HTTPException(
+                status_code=400, detail=f"that chapter document will not load: {problem}"
+            ) from problem
+
+    job_id, workdir = _claim()
+
+    source_cbz = workdir / "source.cbz"
+    await _receive(file, source_cbz)
+
+    chapter = name or file.filename or job_id
+
+    _job = _record(
+        job_id,
+        workdir,
+        kind="redraw",
+        name=chapter,
+        # The same name it arrived under: a redraw replaces a book rather than
+        # adding one, so renaming it would file a second copy beside the first.
+        filename=Path(chapter).name or f"{job_id}.cbz",
+    )
+
+    asyncio.create_task(
+        _run(_job, partial(_redraw, _job, source_cbz, workdir, edited), "redrew")
+    )
 
     return _public(_job)
 
@@ -249,7 +353,7 @@ async def result(job_id: str):
     return FileResponse(
         _job["_result"],
         media_type="application/vnd.comicbook+zip",
-        filename=f"{Path(_job['name']).stem} [{TARGET_LANG.upper()}].cbz",
+        filename=_job["_filename"],
     )
 
 
@@ -432,18 +536,127 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
     return result_path
 
 
-async def _run(job: dict, source: Path, workdir: Path) -> None:
+def _redraw(
+    job: dict, source: Path, workdir: Path, edited: ChapterDocument | None
+) -> Path:
+    """Letter a translation again from what it carries. Returns the new archive.
+
+    Stage 6 on its own. Everything the drawer needs -- the cleaned pages, the
+    boxes, the colours measured off the original lettering, the lines -- came
+    in with the archive, so nothing here loads a model or asks anything to
+    translate. That is the whole reason a correction is worth offering: it
+    costs seconds against the minutes the translation did.
+
+    Runs on a worker thread for the same reason `_convert` does.
+    """
+    clean_dir = workdir / "clean"
+    drawn_dir = workdir / "drawn"
+
+    document = archive.read_document(source)
+
+    if document is None:
+        raise ValueError(
+            "that archive carries no chapter document, so there is nothing to "
+            "redraw from -- it was translated before this build kept one"
+        )
+
+    inner = archive.extract_clean_archive(source, workdir / "clean.zip")
+
+    if inner is None:
+        raise ValueError("that archive carries no cleaned pages to draw on")
+
+    cleaned = archive.unpack_clean(inner, clean_dir)
+    comicinfo = archive.read_comicinfo(source)
+
+    # The edit wins over what was packed, but the pages are still taken from
+    # the archive: a document is a description of an archive, and one that
+    # named pages this archive does not have would simply draw nothing.
+    if edited is not None:
+        document = edited
+
+    drawer = HorizontalDrawer()
+
+    job.update(
+        stage="draw",
+        detail=STAGE_DETAIL["draw"],
+        pages=len(document.pages),
+        regions=len(document.regions()),
+        done=0,
+        total=len(document.pages),
+    )
+
+    async def draw() -> int:
+        drawn_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
+
+        for page in document.pages:
+            source_page = cleaned.get(Path(page.clean).name)
+            frame = read_image(str(source_page)) if source_page else None
+
+            if frame is None:
+                log.warning(
+                    "job %s: no cleaned page for %s, skipping", job["id"], page.name
+                )
+                continue
+
+            frame = await draw_page(
+                frame,
+                [tuple(region.box) for region in page.regions],
+                [
+                    TranslatorResult(region.translation, document.target_language)
+                    for region in page.regions
+                ],
+                drawer,
+                [(region.text_color, region.background_color) for region in page.regions],
+            )
+
+            if write_image(str(drawn_dir / page.name), frame):
+                written += 1
+            else:
+                log.warning("job %s: could not write %s", job["id"], page.name)
+
+            job["done"] = written
+
+        return written
+
+    written = asyncio.run(draw())
+
+    if written == 0:
+        raise ValueError("none of the pages in that archive could be drawn")
+
+    job.update(pages=written, stage="pack", detail="building the archive")
+
+    result_path = workdir / "result.cbz"
+    archive.pack(
+        drawn_dir,
+        result_path,
+        comicinfo,
+        # The cleaned pages go straight back in, byte for byte, alongside the
+        # document as edited -- so what comes out can be corrected again. The
+        # ComicInfo is carried over untouched: this is the same translation,
+        # lettered again, not a new one.
+        extras={archive.CLEAN_ARCHIVE: inner, archive.DOCUMENT: document.to_json()},
+    )
+
+    return result_path
+
+
+async def _run(job: dict, work, verb: str) -> None:
     """Drive one job and record its outcome.
 
     Nothing awaits this, so a failure has nowhere to propagate to except the
     job record the caller is polling -- which is exactly where it is wanted.
+
+    `work` blocks for as long as the job takes and runs on a worker thread for
+    it; `verb` is what the finished job says it did, which is the only thing
+    the two kinds differ by once they are running.
     """
     try:
-        result_path = await asyncio.to_thread(_convert, job, source, workdir)
+        result_path = await asyncio.to_thread(work)
         job.update(
             state="done",
             stage="done",
-            detail=f"translated {job['pages']} pages",
+            detail=f"{verb} {job['pages']} pages",
             finished=_now(),
             _result=result_path,
         )

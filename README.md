@@ -189,14 +189,50 @@ curl -X DELETE localhost:1007/jobs/<id>                 # collected, drop it
 | Route | Does |
 |-------|------|
 | `POST /jobs` | multipart `file` (a CBZ), optional `name` and `source_lang`. 409 while one is running |
+| `POST /jobs/redraw` | multipart `file` (a CBZ this made), optional `name` and `document`. Letters it again |
 | `GET /jobs/current` | the job record, or `{"state": "idle"}` |
 | `GET /jobs/{id}` | the same, by id |
-| `GET /jobs/{id}/result` | the translated CBZ. 409 unless the job is done |
+| `GET /jobs/{id}/result` | the finished CBZ. 409 unless the job is done |
 | `DELETE /jobs/{id}` | drop the job and its files |
 | `GET /healthz` | device, whether the weights are present, whether it is busy, and which sources the OCR `reads` |
 
 One job runs at a time: there is one GPU and the models are process-global, so a
 second chapter running alongside would only make both slower.
+
+#### Correcting a translation
+
+A translated CBZ carries what it took to make it, under `translator/` inside the
+archive: `chapter.json` is the chapter document — every bubble, where it is, what
+it said and what that became — and `clean.zip` holds the pages with the original
+text erased. Together they are exactly what stage 6 needs, so a wrong line can be
+fixed without the chapter going near a model again, and without the untranslated
+book still having to be there.
+
+```bash
+unzip -p out.cbz translator/chapter.json > lines.json   # edit the translations
+curl -X POST localhost:1007/jobs/redraw -F file=@out.cbz \
+     -F document=@lines.json                            # -> a job, as above
+```
+
+`document` is the whole chapter document with the lines edited, not a patch: the
+boxes and the colours measured off the original lettering are not the caller's to
+change, and a merge is the only other way to say so. Left out, the archive is
+simply drawn again from what it already carries.
+
+Nothing is detected, cleaned, read or translated, so no model is loaded and a
+correction comes back in seconds rather than minutes. What comes out carries the
+sidecar too, so it can be corrected again.
+
+The cleaned pages are WebP rather than the lossless PNGs the CLI leaves in
+`output/`: these go into somebody's library, and lossless would roughly double
+what a chapter costs to keep. Nothing accumulates from it, because a redraw
+always starts from the same cleaned page. `CLEAN_QUALITY` above 100 buys lossless
+back.
+
+They are nested in an archive of their own for a reason worth knowing before
+moving them: a comic reader decides what the pages of a CBZ are by walking its
+entries for images at any depth, so cleaned pages sitting loose in there would
+double every chapter's page count. Nothing descends into a nested zip.
 
 This process holds the job, and goes on holding it after it finishes. Whoever
 submitted a chapter can go away, restart, and come back to find the finished
