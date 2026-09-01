@@ -1,5 +1,4 @@
 import cv2
-import math
 import textwrap
 import numpy as np
 from PIL import ImageDraw
@@ -9,10 +8,10 @@ import asyncio
 from translator.plugins.base import Drawable, Drawer
 from translator.utils import (
     get_best_font_size,
-    get_average_font_size,
+    font_line_height,
     cv2_to_pil,
     pil_to_cv2,
-    wrap_text,
+    wrap_to_width,
     drawable_text,
     font_runs,
     fit_box,
@@ -22,6 +21,17 @@ from translator.utils import (
 
 class HorizontalDrawer(Drawer):
     """Draws text horizontally"""
+
+    # The sizes below are quoted for a page this tall, and scaled to whatever
+    # page they are actually drawn on. A bubble covers the same fraction of the
+    # page however finely it was scanned, so lettering has to as well: taken as
+    # literal pixel counts, one setting is fine print on a 2000 pixel scan and a
+    # headline on an 800 pixel one.
+    REFERENCE_PAGE_HEIGHT = 1200
+
+    # How far that scaling is allowed to go, so that a thumbnail or a double
+    # page spread cannot produce a size nobody can read either way.
+    SCALE_RANGE = (0.6, 2.0)
 
     def __init__(
         self,
@@ -35,23 +45,63 @@ class HorizontalDrawer(Drawer):
         self.max_font_size = round(float(max_font_size))
         self.line_spacing = round(float(line_spacing))
         self.min_font_size = max(1, round(float(min_font_size)))
+        # A maximum under the minimum would leave the search nothing to pick
+        # from, and every region would take the overflow path.
+        self.max_font_size = max(self.min_font_size, self.max_font_size)
+
+    def sizes_for(self, page_shape) -> tuple[int, int, int]:
+        """The smallest size, largest size and line spacing for a page this tall."""
+        if page_shape is None:
+            return self.min_font_size, self.max_font_size, self.line_spacing
+
+        low, high = self.SCALE_RANGE
+        scale = min(high, max(low, page_shape[0] / self.REFERENCE_PAGE_HEIGHT))
+
+        return (
+            max(1, round(self.min_font_size * scale)),
+            max(1, round(self.max_font_size * scale)),
+            max(1, round(self.line_spacing * scale)),
+        )
 
     def box_for(
         self, text: str, box: tuple[int, int, int, int], page_shape: tuple
     ) -> tuple[tuple[int, int, int, int], bool]:
         """Grow the box until the text fits at the minimum readable size."""
+        min_size, _, spacing = self.sizes_for(page_shape)
+
         return fit_box(
             drawable_text(text.strip(), self.font_file),
             box,
             page_shape,
             font_file=self.font_file,
-            min_font_size=self.min_font_size,
-            space_between_lines=self.line_spacing,
+            min_font_size=min_size,
+            space_between_lines=spacing,
             hyphenator=Hyphenator("en_US"),
         )
 
+    @staticmethod
+    def stroke_for(font_size: int, should_do_bg: bool, outline: bool) -> int:
+        """How thick an outline this lettering needs.
+
+        Text inside a cleaned bubble takes a hairline in the bubble's own colour
+        so that it never quite touches the line art. Text that outgrew its
+        bubble is over the drawing itself, and needs a real outline to be read
+        against it.
+        """
+        if outline:
+            return max(2, round(font_size / 6))
+
+        return 2 if should_do_bg else 0
+
     def layout(
-        self, text: str, frame_w: int, frame_h: int, hyphenator: Hyphenator
+        self,
+        text: str,
+        frame_w: int,
+        frame_h: int,
+        hyphenator: Hyphenator,
+        min_size: int,
+        max_size: int,
+        spacing: int,
     ) -> tuple[int, list[str], int]:
         """Font size, wrapped lines and line height for one region.
 
@@ -59,34 +109,29 @@ class HorizontalDrawer(Drawer):
         has already been grown as far as it is allowed to go, so drawing small
         and overflowing beats drawing nothing.
         """
-        font_size, chars_per_line, line_height, _ = get_best_font_size(
+        font_size, lines, line_height = get_best_font_size(
             text,
             (frame_w, frame_h),
             font_file=self.font_file,
-            space_between_lines=self.line_spacing,
-            start_size=self.max_font_size,
-            step=1,
+            space_between_lines=spacing,
+            start_size=max_size,
             hyphenator=hyphenator,
-            min_size=self.min_font_size,
+            min_size=min_size,
         )
 
         if font_size:
-            return font_size, wrap_text(text, chars_per_line, hyphenator=hyphenator), line_height
+            return font_size, lines, line_height
 
-        font_size = self.min_font_size
-        char_width, line_height = get_average_font_size(
-            load_font(self.font_file, font_size), text
-        )
-        chars_per_line = max(1, math.floor(frame_w / max(1, char_width)))
+        font = load_font(self.font_file, min_size)
+        lines = wrap_to_width(font, text, frame_w, hyphenator=hyphenator)
 
-        # wrap_text gives up on a word longer than the line; textwrap will break
-        # it, which is the only way to place a very long word in a narrow box.
-        wrapped = wrap_text(text, chars_per_line, hyphenator=hyphenator)
+        # No wrap fits the width, which means a single word wider than the box.
+        # textwrap will break it mid-word, the only way to place it at all.
+        if lines is None:
+            advance = font.getlength(text) / len(text)
+            lines = textwrap.wrap(text, max(1, int(frame_w // max(1.0, advance))))
 
-        if wrapped is None:
-            wrapped = textwrap.wrap(text, chars_per_line) or [text]
-
-        return font_size, wrapped, line_height
+        return min_size, lines or [text], font_line_height(font)
 
     async def draw(
         self,batch: list[Drawable]
@@ -109,25 +154,9 @@ class HorizontalDrawer(Drawer):
         frame_h, frame_w, _ = item.frame.shape
 
         hyphenator = Hyphenator("en_US")
+        min_size, max_size, spacing = self.sizes_for(item.page_shape)
 
-        font_size, wrapped, line_height = self.layout(
-            text, frame_w, frame_h, hyphenator
-        )
-
-        if len(wrapped) == 0:
-            return (item.frame,item_mask)
-
-        frame_as_pil = cv2_to_pil(item.frame)
-        
-        mask_as_pil = cv2_to_pil(item_mask)
-
-        image_draw = ImageDraw.Draw(frame_as_pil)
-
-        mask_draw = ImageDraw.Draw(mask_as_pil)
         color_fg, color_bg, should_do_bg = item.color
-
-        stroke_width = 2 if should_do_bg else 0
-        stroke_color = color_bg
 
         # Text that outgrew its bubble is over whatever the bubble was sitting
         # on. Over line art an outline in the bubble's own colour is enough to
@@ -140,8 +169,41 @@ class HorizontalDrawer(Drawer):
             darkness = float((item.frame.mean(axis=2) < 128).mean())
             busy = darkness >= 0.25
 
-            if not busy:
-                stroke_width = max(stroke_width, max(2, round(font_size / 6)))
+        outline = item.backdrop and not busy
+
+        font_size, wrapped, line_height = self.layout(
+            text, frame_w, frame_h, hyphenator, min_size, max_size, spacing
+        )
+
+        if len(wrapped) == 0:
+            return (item.frame,item_mask)
+
+        # A stroke is drawn around every glyph, so it costs the block its own
+        # width on all four sides. Laid out once to find out how thick it will
+        # be, then again inside what that leaves - a layout measured without it
+        # is exactly a stroke too big for the room it has.
+        stroke_width = self.stroke_for(font_size, should_do_bg, outline)
+
+        if stroke_width > 0:
+            font_size, wrapped, line_height = self.layout(
+                text,
+                max(1, frame_w - (2 * stroke_width)),
+                max(1, frame_h - (2 * stroke_width)),
+                hyphenator,
+                min_size,
+                max_size,
+                spacing,
+            )
+
+        stroke_color = color_bg
+
+        frame_as_pil = cv2_to_pil(item.frame)
+        
+        mask_as_pil = cv2_to_pil(item_mask)
+
+        image_draw = ImageDraw.Draw(frame_as_pil)
+
+        mask_draw = ImageDraw.Draw(mask_as_pil)
 
         # A line is usually one run in the chosen font. It is split only where
         # that font has no glyph, so a symbol it lacks is drawn from a font that
@@ -151,20 +213,14 @@ class HorizontalDrawer(Drawer):
             sum(font.getlength(part) for part, font in runs) for runs in lines
         ]
 
-        block_top = self.line_spacing + (
-            (
-                frame_h
-                - ((len(wrapped) * line_height) + (len(wrapped) * self.line_spacing))
-            )
-            / 2
+        block_height = (len(wrapped) * line_height) + (
+            (len(wrapped) - 1) * spacing
         )
+        block_top = (frame_h - block_height) / 2
 
         if busy:
             padding = max(4, round(font_size / 3))
             block_width = max(line_widths) if len(line_widths) > 0 else 0
-            block_height = (len(wrapped) * line_height) + (
-                (len(wrapped) - 1) * self.line_spacing
-            )
             panel = (
                 max(0, ((frame_w - block_width) / 2) - padding),
                 max(0, block_top - padding),
@@ -184,11 +240,7 @@ class HorizontalDrawer(Drawer):
         for line_no, runs in enumerate(lines):
             line_width = line_widths[line_no]
 
-            draw_y = (
-                block_top
-                + (line_no * line_height)
-                + (self.line_spacing * line_no)
-            )
+            draw_y = block_top + (line_no * (line_height + spacing))
 
             draw_x = abs((frame_w - line_width) / 2)
 
@@ -218,7 +270,7 @@ class HorizontalDrawer(Drawer):
         _, binary_mask = cv2.threshold(mask_cv2, 1, 255, cv2.THRESH_BINARY)
 
         return (pil_to_cv2(frame_as_pil),binary_mask)
-        
+
 
     @staticmethod
     def get_name() -> str:

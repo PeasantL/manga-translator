@@ -765,11 +765,58 @@ def require_model_file(path: str) -> str:
     return path
 
 
-def get_average_font_size(font: ImageFont, text="some text here"):
-    x, y, w, h = font.getbbox(text)
-    widths = list(map(lambda a: font.getbbox(a)[2], list(text)))
-    widths.sort(reverse=True)
-    return widths[1] if len(widths) > 1 else widths[0], h
+def font_line_height(font: ImageFont.FreeTypeFont) -> int:
+    """How much vertical room one line of this font needs.
+
+    Taken from the font's own metrics rather than the bounding box of the text
+    being drawn, so that a line of "no" and a line of "Why?!" are given the same
+    height and a block of them comes out evenly spaced.
+    """
+    ascent, descent = font.getmetrics()
+
+    return ascent + descent
+
+
+def wrap_to_width(
+    font: ImageFont.FreeTypeFont,
+    text: str,
+    max_width: int,
+    hyphenator: Union[Hyphenator, None] = None,
+    min_chars_per_line: int = 6,
+) -> Union[list[str], None]:
+    """Wrap `text` into lines that really are no wider than `max_width`.
+
+    wrap_text counts characters, so it has to be given a character budget rather
+    than a width. The first guess is what a character of this text costs on
+    average in this font; the wrap it produces is then measured and the budget
+    tightened until every line genuinely fits.
+
+    The guess used to be the second widest character in the string, applied to
+    every character in it. That is where most of "text comes out too small" came
+    from: a proportional font's widest character runs to twice its average, so
+    every line was budgeted about half the text it could hold, and the search
+    below kept shrinking the font to make room that was already there.
+    """
+    if len(text) == 0:
+        return []
+
+    advance = font.getlength(text) / len(text)
+    chars = int(max_width // advance) if advance > 0 else 0
+
+    while chars >= min_chars_per_line:
+        lines = wrap_text(text, chars, hyphenator=hyphenator)
+
+        # A word too long for the line even on its own. A tighter budget only
+        # makes that worse, so there is nothing to retry.
+        if lines is None:
+            return None
+
+        if all(font.getlength(line) <= max_width for line in lines):
+            return lines
+
+        chars -= 1
+
+    return None
 
 
 def get_best_font_size(
@@ -778,49 +825,55 @@ def get_best_font_size(
     font_file: str,
     space_between_lines: int = 1,
     start_size: int = 18,
-    step: int = 1,
     min_chars_per_line: int = 6,
-    initial_iterations: int = 0,
     hyphenator: Union[Hyphenator, None] = None,
     min_size: int = 1,
-) -> Union[tuple[None, None, None, int], tuple[int, int, int, int]]:
-    current_font_size = start_size
-    current_font = None
+) -> Union[tuple[None, None, None], tuple[int, list[str], int]]:
+    """The largest size from min_size to start_size whose text fits `wh`.
+
+    Returns the size, the lines it wraps into at that size, and the height of
+    one line - the lines included because the caller would otherwise have to
+    reproduce the wrap, and any difference in how it did so would be drawn.
+
+    (None, None, None) means the text does not fit even at the minimum, which is
+    the caller's cue to grow the box rather than shrink the text further.
+
+    Binary searched rather than stepped down a pixel at a time: text that fits
+    at one size fits at every smaller one, and a chapter is hundreds of these.
+    """
     max_width, max_height = wh
 
-    iterations = initial_iterations
-    while True:
-        iterations += 1
+    def attempt(size: int) -> Union[tuple[list[str], int], None]:
+        font = load_font(font_file, size)
+        lines = wrap_to_width(
+            font, text, max_width, hyphenator=hyphenator,
+            min_chars_per_line=min_chars_per_line,
+        )
 
-        # Below min_size the text is too small to read, so report that it does
-        # not fit rather than shrinking it into illegibility.
-        if current_font_size < min_size:
-            return None, None, None, iterations
+        if lines is None or len(lines) == 0:
+            return None
 
-        current_font = ImageFont.truetype(font_file, current_font_size)
-
-        cur_f_width, cur_f_height = get_average_font_size(current_font, text)
-
-        chars_per_line = math.floor(max_width / cur_f_width)
-
-        if chars_per_line < min_chars_per_line:
-            current_font_size -= step
-            continue
-
-        # print(chars_per_line)
-        lines = wrap_text(text, chars_per_line, hyphenator=hyphenator)
-        if lines is None:
-            current_font_size -= step
-            continue
-
-        height_needed = (len(lines) * cur_f_height) + (
+        line_height = font_line_height(font)
+        needed = (len(lines) * line_height) + (
             (len(lines) - 1) * space_between_lines
         )
-        if height_needed <= max_height:
-            return current_font_size, chars_per_line, cur_f_height, iterations
-        current_font_size -= step
 
+        return (lines, line_height) if needed <= max_height else None
 
+    low, high = min_size, start_size
+    best = None
+
+    while low <= high:
+        size = (low + high) // 2
+        fitted = attempt(size)
+
+        if fitted is None:
+            high = size - 1
+        else:
+            best = (size, fitted[0], fitted[1])
+            low = size + 1
+
+    return best if best is not None else (None, None, None)
 
 
 def fit_box(
@@ -850,13 +903,12 @@ def fit_box(
         return (x1, y1, x2, y2), False
 
     def fits(w: int, h: int) -> bool:
-        size, _, _, _ = get_best_font_size(
+        size, _, _ = get_best_font_size(
             text,
             (w, h),
             font_file=font_file,
             space_between_lines=space_between_lines,
             start_size=min_font_size,
-            step=1,
             hyphenator=hyphenator,
             min_size=min_font_size,
         )

@@ -53,6 +53,27 @@ black bubble is lettered white because that is what was measured off it, not
 because anything guessed. Both are ordinary JSON: correct a translation by hand,
 re-run `-s draw`, and only the drawing happens again.
 
+### Lettering
+
+Stage 6 draws each translation at the largest size it fits its bubble at,
+between a minimum and a maximum. Both are quoted for a 1200 pixel page and
+scaled to the page actually being drawn on: a bubble covers the same fraction of
+the page however finely it was scanned, so as literal pixel counts one setting
+is fine print on a 2000 pixel scan and a headline on an 800 pixel one.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `min_font_size` | `12` | Below this the text spills out of the bubble rather than shrinking further |
+| `max_font_size` | `30` | The largest a short line in a roomy bubble is drawn |
+| `line_spacing` | `2` | Leading between lines |
+
+Pass them with `-dra`, e.g. `-dra "max_font_size=36"`. On the 1600 pixel example
+pages those defaults come out as 16 and 40.
+
+A translation that does not fit at the minimum grows its box instead, up to
+2.5x, and is drawn over the artwork with an outline — or on a panel of its own
+where what is underneath is too solid to read against.
+
 Stages 3 to 6 are plugins, so adding a backend means writing one class and
 adding it to that stage's list in `translator/plugins/__init__.py`. The CLI
 takes a backend by its index in that list.
@@ -310,7 +331,6 @@ Not working yet:
 
 - Vertical text drawing
 - Free text OCR and translation quality
-- Text resize algorithm — some text comes out too large or too small
 
 Removed rather than fixed: text colour detection (`translator/color_detect/`)
 and the `VerticalDrawer` stub. Both were dead code; the git history has them if
