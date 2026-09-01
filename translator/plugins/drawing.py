@@ -6,20 +6,13 @@ from PIL import ImageDraw
 from numpy import ndarray
 from hyphen import Hyphenator
 import asyncio
-from translator.plugins.base import (
-    Drawable,
-    Drawer,
-    PluginArgument,
-    PluginSelectArgument,
-    PluginSelectArgumentOption,
-)
+from translator.plugins.base import Drawable, Drawer
 from translator.utils import (
     get_best_font_size,
     get_average_font_size,
     cv2_to_pil,
     pil_to_cv2,
     wrap_text,
-    get_fonts,
     drawable_text,
     font_runs,
     fit_box,
@@ -226,44 +219,6 @@ class HorizontalDrawer(Drawer):
 
         return (pil_to_cv2(frame_as_pil),binary_mask)
         
-
-    @staticmethod
-    def get_arguments() -> list[PluginArgument]:
-        fonts_available = get_fonts()
-        return [
-            PluginSelectArgument(
-                id="font_file",
-                name="Font",
-                description="The font to draw with",
-                options=list(
-                    map(
-                        lambda a: PluginSelectArgumentOption(name=a[0], value=a[1]),
-                        fonts_available,
-                    )
-                ),
-                default=fonts_available[0][1],
-            ),
-            PluginArgument(
-                id="max_font_size",
-                name="Max Font Size",
-                description="The max font size for the sizing algorithm",
-                default="30",
-            ),
-            PluginArgument(
-                id="line_spacing",
-                name="Line Spacing",
-                description="Space between lines",
-                default="2",
-            ),
-            PluginArgument(
-                id="min_font_size",
-                name="Min Font Size",
-                description="The smallest readable font size. Text that will not "
-                "fit its bubble at this size spills past it at this size, with "
-                "white behind it, instead of being shrunk further",
-                default="12",
-            ),
-        ]
 
     @staticmethod
     def get_name() -> str:

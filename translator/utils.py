@@ -4,10 +4,7 @@ import re
 import math
 import torch
 import threading
-import pycountry
 import numpy as np
-import asyncio
-import inspect
 import largestinteriorrectangle as lir
 from typing import Union, Callable
 from PIL import Image, ImageFont
@@ -21,73 +18,8 @@ class TranslatorGlobals:
     COLOR_BLACK = np.array((0, 0, 0))
     COLOR_WHITE = np.array((255, 255, 255))
 
-async def run_in_thread(func,*args,**kwargs):
-    loop = asyncio.get_event_loop()
-    task = asyncio.Future()
-    def run():
-        nonlocal loop
-        nonlocal func
-        nonlocal task
-        
-        try:
-            result = func(*args,**kwargs)
-
-            if inspect.isawaitable(result):
-                result = asyncio.run(result)
-        except BaseException as e:
-            # Without this the future is never resolved and the caller - a tornado
-            # request handler - waits on it forever instead of returning a 500.
-            loop.call_soon_threadsafe(task.set_exception,e)
-            return
-
-        loop.call_soon_threadsafe(task.set_result,result)
-    
-    task_thread = threading.Thread(group=None,daemon=True,target=run)
-    task_thread.start()
-    return await task
-
-def run_in_thread_decorator(func):
-    async def wrapper(*args,**kwargs):
-        return await run_in_thread(func,*args,**kwargs)
-    return wrapper
-
-
-    
 def get_torch_device() -> torch.device:
     return torch.device('cuda') if torch.cuda.is_available() else (torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu'))
-
-def simplify_lang_code(code: str) -> Union[str, None]:
-    try:
-        lang = pycountry.languages.lookup(code)
-
-        return getattr(lang, "alpha_2", getattr(lang, "alpha_3", None))
-    except:
-        return code
-
-
-def get_languages() -> list[tuple[str, str]]:
-    return list(
-        filter(
-            lambda a: a[1] is not None,
-            list(
-                map(
-                    lambda a: (
-                        a.name,
-                        getattr(a, "alpha_2", getattr(a, "alpha_3", None)),
-                    ),
-                    list(pycountry.languages),
-                )
-            ),
-        )
-    )
-
-
-def lang_code_to_name(code: str) -> Union[str, None]:
-    try:
-        return pycountry.languages.lookup(code).name
-    except:
-        return None
-
 
 def adjust_contrast_brightness(
     img: np.ndarray, contrast: float = 1.0, brightness: int = 0
@@ -815,14 +747,6 @@ def font_runs(text: str, font_file: str, size: int) -> list[tuple[str, ImageFont
 @lru_cache(maxsize=64)
 def load_font(font_file: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_file, size)
-
-
-def get_fonts() -> list[tuple[str, str]]:
-    fonts = []
-    for file in filter(lambda a: a.endswith(".ttf"), os.listdir("./fonts")):
-        fonts.append((file[0:-4], os.path.abspath(os.path.join("./fonts", file))))
-
-    return fonts
 
 
 def get_model_path(model=""):

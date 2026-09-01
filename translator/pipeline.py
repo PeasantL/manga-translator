@@ -30,9 +30,8 @@ from translator.plugins import (
 )
 
 
-# server.py builds a FullConversion per request, which reloaded every model each
-# time. The weights are read-only during inference, so one instance per path is
-# enough for the whole process.
+# The weights are read-only during inference, so one instance per path is enough
+# for the whole process, however many FullConversions are built over its life.
 _yolo_models: dict[str, YOLO] = {}
 
 

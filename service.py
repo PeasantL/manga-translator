@@ -1,9 +1,9 @@
 """A job API over the pipeline: one CBZ in, one translated CBZ out.
 
-server.py is the interactive way in -- one image, one request, a person looking
-at the result. This is the other way: a library hands over a whole chapter and
-collects a translated one back minutes later. That is far too long to hold a
-request open for, so submitting a chapter starts a job and returns immediately.
+This is how everything but the CLI reaches the pipeline: a library hands over a
+whole chapter and collects a translated one back minutes later. That is far too
+long to hold a request open for, so submitting a chapter starts a job and
+returns immediately.
 
 This process is the one that holds the job. Whoever submitted a chapter can go
 away, restart, and come back to find the finished file still waiting, which is

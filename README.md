@@ -53,9 +53,9 @@ black bubble is lettered white because that is what was measured off it, not
 because anything guessed. Both are ordinary JSON: correct a translation by hand,
 re-run `-s draw`, and only the drawing happens again.
 
-Stages 3 to 6 are plugins. Each declares its own settings, and the web UI builds
-its settings form from those declarations, so adding a backend means writing one
-class and adding one line to the matching `get.py`.
+Stages 3 to 6 are plugins, so adding a backend means writing one class and
+adding it to that stage's list in `translator/plugins/__init__.py`. The CLI
+takes a backend by its index in that list.
 
 Each stage deliberately carries one good backend rather than a menu. The
 alternatives that used to be here — EasyOCR, Tesseract, DeepFillV2, OpenAI,
@@ -148,25 +148,10 @@ aggressively.
 `./run.sh` is a shortcut that creates the venv if needed, installs
 dependencies, and converts every chapter folder in `./input`.
 
-### Web UI
-
-```bash
-python3 server.py
-```
-
-Serves the interface on <http://localhost:5000>, where you can pick backends,
-set their arguments, and compare the original against the result.
-
-The UI is a React app in `ui/`. To rebuild it after changing the source:
-
-```bash
-cd ui && npm install && npm run build
-```
-
 ### As a service
 
-`service.py` is the other way in. Where `server.py` is a person converting one
-image at a time, this takes a whole chapter as a CBZ and hands back a translated
+`service.py` is the other way in, and the one anything other than a person at a
+terminal uses. It takes a whole chapter as a CBZ and hands back a translated
 CBZ — which takes minutes, far too long to hold a request open for, so
 submitting one starts a job:
 
@@ -253,15 +238,15 @@ The translation backend needs credentials. Copy the template and fill it in:
 cp .env.example .env      # then set DEEPSEEK_API_KEY
 ```
 
-One file covers every way of running this. `main.py`, `server.py` and
-`service.py` all load it directly, and `docker compose` reads the same file to
-fill in `docker-compose.yml`. It is gitignored; `.env.example` is the copy that
+One file covers both ways of running this. `main.py` and `service.py` load it
+directly, and `docker compose` reads the same file to fill in
+`docker-compose.yml`. It is gitignored; `.env.example` is the copy that
 is checked in.
 
 Only translating needs the key. Detection, cleaning, OCR and lettering all run
-without one, so `-s ocr` works on an empty key — as does the `Custom Text`
-translator, which writes a fixed string into every bubble and is how to check
-those stages on their own. The service reaches it as `TRANSLATOR=debug`.
+without one, so `-s ocr` works on an empty key — as does the debug translator,
+which writes a fixed string into every bubble and is how to check those stages
+on their own. The service reaches it as `TRANSLATOR=debug`.
 
 ## Datasets
 
@@ -287,7 +272,6 @@ the result depends on which model and target language you translate with.
 
 ```
 main.py                     the CLI
-server.py                   the web UI's backend
 service.py                  the job API: a CBZ in, a translated CBZ out
 run.sh                      venv, dependencies, then every chapter in input/
 fetch_models.sh             downloads the YOLO weights into models/
@@ -305,7 +289,6 @@ translator/
         ocr.py              stage 4
         translation.py      stage 5
         drawing.py          stage 6
-ui/                         the web UI, React
 input/  output/  fonts/  models/  examples/
 ```
 
