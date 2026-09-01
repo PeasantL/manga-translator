@@ -16,7 +16,7 @@ from translator.utils import (
 import traceback
 import torch
 import asyncio
-from typing import Union
+from typing import Callable, Union
 from translator.plugins import (
     Drawable,
     Translator,
@@ -156,6 +156,7 @@ class FullConversion:
         device=None,
         yolo_device=None,
         debug=False,
+        progress: Union[Callable[[str, int, int], None], None] = None,
     ) -> None:
         # Everything below is built here rather than in the signature. As default
         # arguments they were evaluated once at import time, so merely importing this
@@ -184,6 +185,16 @@ class FullConversion:
         self.drawer = drawer if drawer is not None else HorizontalDrawer()
         self.debug = debug
         self.cleaner = cleaner if cleaner is not None else LamaCleaner()
+        # Called as (stage, done, total) as the chapter goes through. The CLI
+        # leaves it unset and reads the printed lines instead; a caller driving
+        # this from a request has nowhere to read those, and a chapter takes
+        # long enough that something has to be able to say where it has got to.
+        self.progress = progress
+
+    def _report(self, stage: str, done: int, total: int) -> None:
+        """Tell the caller where the chapter has got to, if it asked."""
+        if self.progress is not None:
+            self.progress(stage, done, total)
 
     def filter_results(self, results, min_confidence=0.1):
         bounding_boxes = np.array(results.boxes.xyxy.cpu(), dtype="int")
@@ -371,6 +382,7 @@ class FullConversion:
                 f"  [{finished}/{total}] cleaned {label}, "
                 f"{len(page.draw_boxes)} regions"
             )
+            self._report("clean", finished, total)
 
             return page
 
@@ -407,6 +419,7 @@ class FullConversion:
             for i in range(0, len(text_crops), ocr_batch_size):
                 ocr_results.extend(await self.ocr(text_crops[i:i + ocr_batch_size]))
                 print(f"  [{len(ocr_results)}/{len(text_crops)}] regions read")
+                self._report("read", len(ocr_results), len(text_crops))
 
             print(f"  read {len(text_crops)} regions in {time.time() - start:.1f}s")
 
@@ -421,9 +434,15 @@ class FullConversion:
         if not self.translator or len(ocr_results) == 0:
             return []
 
+        # Reported before rather than after: this is one request covering the
+        # whole chapter, so there is no progress to be had within it, and a
+        # caller showing "translating" wants it up while the wait is happening.
+        self._report("translate", 0, len(ocr_results))
+
         start = time.time()
         translations = list(await self.translator(ocr_results))
         print(f"  translated {len(ocr_results)} regions in {time.time() - start:.1f}s")
+        self._report("translate", len(ocr_results), len(ocr_results))
 
         return align_translations(translations, len(ocr_results))
 
@@ -447,6 +466,7 @@ class FullConversion:
                 results.append(page.frame)
 
             offset += count
+            self._report("draw", len(results), len(pages))
 
         print(f"  drew {len(results)} pages in {time.time() - start:.1f}s")
 

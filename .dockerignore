@@ -1,0 +1,20 @@
+.git
+.venv
+__pycache__
+*.pyc
+
+# Model weights live in a volume, not the image: they are ~258 MB and would
+# otherwise be re-baked into every layer rebuild.
+models
+
+# Working folders. The container is handed a chapter per job.
+input
+output
+runs
+
+# The React sources. Only ui/build is served, and node_modules is enormous.
+ui/node_modules
+ui/src
+ui/public
+
+examples

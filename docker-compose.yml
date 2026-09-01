@@ -1,0 +1,46 @@
+name: manga-translator
+
+services:
+  manga-translator:
+    build: .
+    container_name: manga-translator
+    ports:
+      - "${PORT:-1007}:1007"
+    environment:
+      - PORT=1007
+      # Only the deepseek translator needs this. Set TRANSLATOR=debug to run
+      # the pipeline without it, which letters every bubble with a fixed string
+      # and exercises everything except the translation itself.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TRANSLATOR=${TRANSLATOR:-deepseek}
+      - TARGET_LANG=${TARGET_LANG:-en}
+    volumes:
+      # The YOLO weights, fetched on first boot. A volume rather than part of
+      # the image so that rebuilding does not re-download 258 MB.
+      - models:/app/models
+      # manga-ocr and LaMa fetch their own on first use, another 600-odd MB.
+      - cache:/cache
+      # Scratch for the job in flight: a chapter unpacked, lettered and packed
+      # again. Anything left here from a previous run is cleared at startup.
+      - jobs:/jobs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  models:
+  cache:
+  jobs:
+
+# The same external network Komga and mangaserver are on, so that mangaserver
+# reaches this as http://manga-translator:1007 rather than back out through the
+# host's published port.
+networks:
+  default:
+    name: homelab
+    external: true
