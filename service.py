@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse
 
 from translator import archive
 from translator.pipeline import FullConversion
-from translator.plugins import DebugTranslator, DeepSeekTranslator, JapaneseOcr
+from translator.plugins import DebugTranslator, DeepSeekTranslator, JapaneseOcr, OcrResult
 from translator.utils import read_image, write_image
 
 log = logging.getLogger("translator.service")
@@ -234,6 +234,28 @@ STAGE_DETAIL = {
 }
 
 
+async def _translate_title(conversion: FullConversion, title: str) -> str:
+    """Translate the book's own title, as a request of its own.
+
+    Not folded in with the dialogue: the chapter is sent as one ordered list so
+    the translator can use what was said before and after each line, and a
+    title is not part of that conversation. It is one short extra request.
+
+    A failure here is not a failure of the translation -- the pages are done by
+    this point -- so it gives up and leaves the original title instead.
+    """
+    if not title:
+        return ""
+
+    try:
+        results = list(await conversion.translator([OcrResult(title, "")]))
+    except Exception as problem:
+        log.warning("could not translate the title %r: %s", title, problem)
+        return ""
+
+    return results[0].text.strip() if results else ""
+
+
 def _convert(job: dict, source: Path, workdir: Path) -> Path:
     """Translate one CBZ, start to finish. Returns the path of the result.
 
@@ -280,8 +302,13 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
     # pipeline outlives any one job but a progress callback belongs to one.
     conversion.progress = report
 
+    async def convert() -> tuple[list, str]:
+        pages = await conversion([frame for _, frame in readable])
+        job.update(stage="title", detail="translating the title")
+        return pages, await _translate_title(conversion, archive.source_title(comicinfo))
+
     try:
-        frames = asyncio.run(conversion([frame for _, frame in readable]))
+        frames, title = asyncio.run(convert())
     finally:
         conversion.progress = None
 
@@ -297,7 +324,7 @@ def _convert(job: dict, source: Path, workdir: Path) -> Path:
     archive.pack(
         drawn_dir,
         result_path,
-        archive.translated_comicinfo(comicinfo, target_lang=TARGET_LANG),
+        archive.translated_comicinfo(comicinfo, target_lang=TARGET_LANG, title=title),
     )
 
     return result_path

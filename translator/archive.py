@@ -125,16 +125,37 @@ def _csv_field(root: ET.Element, tag: str) -> list[str]:
     return [part.strip() for part in node.text.split(",") if part.strip()]
 
 
+def source_title(original: bytes | None) -> str:
+    """The Title the archive's ComicInfo carries, if it has one."""
+    if not original:
+        return ""
+
+    try:
+        root = ET.fromstring(original)
+    except ET.ParseError:
+        return ""
+
+    node = root.find("Title")
+
+    return (node.text or "").strip() if node is not None else ""
+
+
 def translated_comicinfo(
     original: bytes | None,
     target_lang: str = "en",
     title_suffix: str = "[EN]",
+    title: str = "",
 ) -> bytes:
     """The source's ComicInfo, rewritten to describe the translation.
 
     Everything the original said is kept -- artist, circle, tags, the gallery it
     came from -- because the translation is the same book. Only what is no
     longer true changes: the language, and the title it is filed under.
+
+    A `title` replaces the original outright -- the dialogue is in English now,
+    so a Japanese title on the shelf beside it helps nobody. Without one the
+    original is kept and only marked, which is what happens when there was
+    nothing to translate or translating it failed.
 
     Built through ElementTree rather than string edits so that a title with an
     ampersand in it cannot produce a file Komga refuses to parse.
@@ -154,11 +175,17 @@ def translated_comicinfo(
         root.set("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
 
     for tag in ("Title", "Series"):
-        node = root.find(tag)
+        node = _child(root, tag) if title else root.find(tag)
+
+        if node is None:
+            continue
+
+        if title:
+            node.text = title
 
         # Guarded on the suffix already being there so that translating a file
         # twice does not produce "Name [EN] [EN]".
-        if node is not None and node.text and title_suffix not in node.text:
+        if node.text and title_suffix not in node.text:
             node.text = f"{node.text} {title_suffix}"
 
     _child(root, "LanguageISO").text = target_lang
