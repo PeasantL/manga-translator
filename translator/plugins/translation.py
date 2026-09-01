@@ -1,16 +1,7 @@
 import os
 import re
 import sys
-from translator.utils import get_languages
-from translator.plugins.base import (
-    Translator,
-    TranslatorResult,
-    OcrResult,
-    PluginSelectArgument,
-    PluginSelectArgumentOption,
-    PluginTextArgument,
-    PluginArgument,
-)
+from translator.plugins.base import Translator, TranslatorResult, OcrResult
 
 # Matches "12. some text", "12) some text", "12: some text". The separator is
 # required so that a translation which itself opens with a number is not mistaken
@@ -106,8 +97,9 @@ class DeepSeekTranslator(Translator):
         ("DeepSeek V4 Flash", "deepseek-v4-flash"),
     ]
 
-    # Both v4 models reason, and both take reasoning_effort.
-    REASONING_EFFORTS = ["high", "medium", "low"]
+    # Both v4 models reason, and both take reasoning_effort: high, medium or
+    # low. Reasoning shares the token budget with the answer, so raising it may
+    # need max_tokens raised with it.
 
     def __init__(
         self,
@@ -124,8 +116,8 @@ class DeepSeekTranslator(Translator):
         super().__init__()
         from openai import AsyncOpenAI
 
-        # The UI sends the key as an argument; fall back to the environment so
-        # a .env file works for the CLI.
+        # Passed as an argument by anything constructing this directly; falls
+        # back to the environment so a .env file works for the CLI.
         key = (api_key or "").strip() or os.getenv("DEEPSEEK_API_KEY", "")
 
         self.client = (
@@ -343,88 +335,6 @@ class DeepSeekTranslator(Translator):
     def get_name() -> str:
         return "DeepSeek"
 
-    @staticmethod
-    def get_arguments() -> list[PluginArgument]:
-        languages = get_languages()
-        languages.sort(key=lambda a: a[0].lower())
-        options = list(map(lambda a: PluginSelectArgumentOption(a[0], a[1]), languages))
-
-        return [
-            PluginTextArgument(
-                id="api_key",
-                name="API Key",
-                description="DeepSeek API key. Falls back to DEEPSEEK_API_KEY",
-            ),
-            PluginSelectArgument(
-                id="target_lang",
-                name="Target Language",
-                description="The language to translate to",
-                options=options,
-                default="en",
-            ),
-            PluginSelectArgument(
-                id="source_lang",
-                name="Source Language",
-                description="What the pages are in. Leave unset to go by what "
-                "the OCR reports",
-                options=[PluginSelectArgumentOption("From the OCR", "")] + options,
-                default="",
-            ),
-            PluginSelectArgument(
-                id="model",
-                name="Model",
-                description="The model to use",
-                options=list(
-                    map(
-                        lambda a: PluginSelectArgumentOption(a[0], a[1]),
-                        DeepSeekTranslator.MODELS,
-                    )
-                ),
-                default=DeepSeekTranslator.MODELS[0][1],
-            ),
-            PluginTextArgument(
-                id="temp",
-                name="Temperature",
-                description="Sampling temperature",
-                default="1.3",
-            ),
-            PluginTextArgument(
-                id="stream",
-                name="Stream",
-                description="Show the reasoning and the translated lines as they "
-                "arrive",
-                default="true",
-            ),
-            PluginSelectArgument(
-                id="reasoning_effort",
-                name="Reasoning Effort",
-                description="How much thinking the model does before answering. "
-                "Reasoning counts towards max_tokens, so raising this may need "
-                "max_tokens raised with it",
-                options=[
-                    PluginSelectArgumentOption(e.capitalize(), e)
-                    for e in DeepSeekTranslator.REASONING_EFFORTS
-                ],
-                default="low",
-            ),
-            PluginTextArgument(
-                id="max_tokens",
-                name="Max Output Tokens",
-                description="Cap on the reply. Reasoning counts towards this, so "
-                "raise it if long chapters come back truncated",
-                default="16384",
-            ),
-            PluginTextArgument(
-                id="max_lines",
-                name="Lines Per Request",
-                description="How many lines to send in one request. A chapter with "
-                "more than this is split, with the previous lines carried over as "
-                "context",
-                default="200",
-            ),
-        ]
-
-
 class DebugTranslator(Translator):
     """Writes the specified text"""
 
@@ -438,11 +348,3 @@ class DebugTranslator(Translator):
     @staticmethod
     def get_name() -> str:
         return "Custom Text"
-
-    @staticmethod
-    def get_arguments() -> list[PluginArgument]:
-        return [
-            PluginTextArgument(
-                id="text", name="Debug Text", description="What to write"
-            )
-        ]

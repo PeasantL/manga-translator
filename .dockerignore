@@ -12,9 +12,4 @@ input
 output
 runs
 
-# The React sources. Only ui/build is served, and node_modules is enormous.
-ui/node_modules
-ui/src
-ui/public
-
 examples

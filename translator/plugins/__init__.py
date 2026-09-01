@@ -1,9 +1,9 @@
 """The parts of the pipeline that can be swapped out.
 
 One module per stage - cleaning, ocr, translation, drawing - each holding the
-backends for that stage, and one registry function per stage listing them. The
-web UI builds its settings form from whatever these return, so a new backend is
-a class in the stage's module and a name in its list here.
+backends for that stage, and one registry function per stage listing them. A new
+backend is a class in the stage's module and a name in its list here; the CLI
+takes it by its index in that list.
 
 Every stage runs one real backend today. The no-ops (NoOcr, DebugTranslator)
 are kept because they are how you exercise the rest of the pipeline without an
@@ -17,11 +17,6 @@ from translator.plugins.base import (
     Drawer,
     Ocr,
     OcrResult,
-    PluginArgument,
-    PluginArgumentType,
-    PluginSelectArgument,
-    PluginSelectArgumentOption,
-    PluginTextArgument,
     Translator,
     TranslatorResult,
 )

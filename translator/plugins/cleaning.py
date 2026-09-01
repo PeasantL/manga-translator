@@ -1,10 +1,10 @@
 from numpy import ndarray
-from translator.plugins.base import Cleaner, PluginArgument, PluginTextArgument
+from translator.plugins.base import Cleaner
 from translator.utils import in_paint_optimized, cv2_to_pil, pil_to_cv2
 
 
-# Shared across instances so that a new LamaCleaner per web request does not
-# reload 196 MB of weights. The import stays inside the accessor to keep merely
+# Shared across instances so that a second LamaCleaner does not reload 196 MB
+# of weights. The import stays inside the accessor to keep merely
 # importing this module from pulling in torch hub and downloading the checkpoint.
 _lama = None
 
@@ -32,9 +32,6 @@ class LamaCleaner(Cleaner):
     def get_name() -> str:
         return "Lama Cleaner"
 
-    @staticmethod
-    def get_arguments() -> list[PluginArgument]:
-        return [PluginTextArgument(id="dilation", name="Mask Dilation",description="The dilation used for the text mask", default="13")]
     
     def clean_with_lama(self,frame,mask):
         return pil_to_cv2(
