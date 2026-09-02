@@ -38,7 +38,7 @@ class HorizontalDrawer(Drawer):
         font_file="fonts/animeace2_reg.ttf",
         max_font_size="30",
         line_spacing="2",
-        min_font_size="12",
+        min_font_size="11",
     ) -> None:
         super().__init__()
         self.font_file = font_file
@@ -64,9 +64,17 @@ class HorizontalDrawer(Drawer):
         )
 
     def box_for(
-        self, text: str, box: tuple[int, int, int, int], page_shape: tuple
+        self,
+        text: str,
+        box: tuple[int, int, int, int],
+        page_shape: tuple,
+        avoid=(),
     ) -> tuple[tuple[int, int, int, int], bool]:
-        """Grow the box until the text fits at the minimum readable size."""
+        """Grow the box until the text fits at the minimum readable size.
+
+        `avoid` is what else is being lettered on this page, so that a box which
+        has to grow grows over the artwork rather than over another bubble.
+        """
         min_size, _, spacing = self.sizes_for(page_shape)
 
         return fit_box(
@@ -77,6 +85,7 @@ class HorizontalDrawer(Drawer):
             min_font_size=min_size,
             space_between_lines=spacing,
             hyphenator=Hyphenator("en_US"),
+            avoid=avoid,
         )
 
     @staticmethod
@@ -242,7 +251,11 @@ class HorizontalDrawer(Drawer):
 
             draw_y = block_top + (line_no * (line_height + spacing))
 
-            draw_x = abs((frame_w - line_width) / 2)
+            # Not abs(): a line wider than its box is centred on the box and
+            # hangs off both ends, which is a line that reads. Taken as a
+            # positive number it was pushed right instead, and the end of it
+            # went off the edge of the frame and was never drawn.
+            draw_x = (frame_w - line_width) / 2
 
             for part, font in runs:
                 image_draw.text(

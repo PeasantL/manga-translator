@@ -74,16 +74,24 @@ is fine print on a 2000 pixel scan and a headline on an 800 pixel one.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `min_font_size` | `12` | Below this the text spills out of the bubble rather than shrinking further |
+| `min_font_size` | `11` | Below this the text spills out of the bubble rather than shrinking further |
 | `max_font_size` | `30` | The largest a short line in a roomy bubble is drawn |
 | `line_spacing` | `2` | Leading between lines |
 
 Pass them with `-dra`, e.g. `-dra "max_font_size=36"`. On the 1600 pixel example
-pages those defaults come out as 16 and 40.
+pages those defaults come out as 15 and 40.
 
 A translation that does not fit at the minimum grows its box instead, up to
 2.5x, and is drawn over the artwork with an outline — or on a panel of its own
-where what is underneath is too solid to read against.
+where what is underneath is too solid to read against. The room it grows into is
+whatever the other bubbles on the page are not using, and a box that started out
+much taller than it is wide — a strip of vertical Japanese — is squared up as it
+grows rather than scaled, because English set in a column comes out one word to
+a line.
+
+Words are broken across lines only where a dictionary says they may, and only
+with a hyphen: a break that would leave one or two letters stranded is not taken,
+and where a size a point or two smaller sets every word whole, that size wins.
 
 Stages 3 to 6 are plugins, so adding a backend means writing one class and
 adding it to that stage's list in `translator/plugins/__init__.py`. The CLI

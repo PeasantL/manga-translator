@@ -526,6 +526,12 @@ def in_paint_optimized(
 
 
 def try_merge_hyphenated(text: list[str], max_chars: int):
+    """Put back together any word this wrap broke and then found room for.
+
+    Only the hyphens this code added, which is what SOFT_HYPHEN marks them for:
+    a dash the writer wrote stays, and the halves either side of it are two
+    words that are spelled that way.
+    """
     final = []
     total = deque(text)
     current = total.popleft().strip()
@@ -533,7 +539,7 @@ def try_merge_hyphenated(text: list[str], max_chars: int):
     while len(total) > 0 or current != "":
         if (
             len(total) > 0
-            and current.endswith("-")
+            and current.endswith(SOFT_HYPHEN)
             and len(current[:-1] + total[0]) <= max_chars
         ):
             current = current[:-1] + total.popleft().strip()
@@ -543,6 +549,71 @@ def try_merge_hyphenated(text: list[str], max_chars: int):
             current = total.popleft() if len(total) > 0 else ""
 
     return final
+
+
+# Characters a word may be broken after without a hyphen being added, because
+# one is already there. Spelled out because an em dash is not a hyphen as far as
+# str.index is concerned, but is to whoever is reading the page.
+BREAK_AFTER = "-\u2013\u2014"
+
+# What a break has to leave behind and take with it. Two characters before it
+# and three after is the printer's rule, and it is what keeps "Correct" off the
+# page as "Correc-" and a lone "t".
+MIN_BEFORE_BREAK = 2
+MIN_AFTER_BREAK = 3
+
+# How much lettering size a whole word is worth. See get_best_font_size.
+HYPHEN_TOLERANCE = 2
+
+# Stripped off a word before it is looked up. The hyphenator is a dictionary,
+# and "Priestess:" is not in it -- asked anyway, it guesses, and it guessed
+# "Prieste-ss".
+AROUND_WORDS = "\"'\u201c\u201d\u2018\u2019(),.:;!?\u2026"
+
+# Stands in for a hyphen this code added, for as long as the lines are being
+# built. A dash the writer put in a word looks the same once it is drawn but is
+# not the same thing at all: ours can be taken back out if the two halves come
+# to share a line again, and "silver-ranked" cannot.
+SOFT_HYPHEN = "\u00ad"
+
+
+def break_points(word: str, hyphenator: Union[Hyphenator, None]) -> list:
+    """Where a word can be broken across two lines, worst options removed.
+
+    Each is the part that stays on the line, mark included, and the part that
+    moves to the next. Shortest first, as the hyphenator gives them.
+    """
+    # A word already carrying a dash breaks there and nowhere else: the mark is
+    # the writer's, a second one added by us in the same word reads as two
+    # words, and the halves must never be run back together.
+    dash = next((i for i, c in enumerate(word) if c in BREAK_AFTER), -1)
+
+    if 0 <= dash < len(word) - 1:
+        return [[word[: dash + 1], word[dash + 1:]]]
+
+    if hyphenator is None:
+        return []
+
+    core = word.strip(AROUND_WORDS)
+
+    if len(core) == 0:
+        return []
+
+    opens = word.index(core)
+    before, after = word[:opens], word[opens + len(core):]
+
+    try:
+        pairs = hyphenator.pairs(core)
+    except Exception:
+        print("EXCEPTION WHEN HYPHENATING:", word)
+
+        return []
+
+    return [
+        [before + head + SOFT_HYPHEN, tail + after]
+        for head, tail in pairs
+        if len(head) >= MIN_BEFORE_BREAK and len(tail) >= MIN_AFTER_BREAK
+    ]
 
 
 def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
@@ -558,42 +629,36 @@ def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
         sep = " " if len(current_line) > 0 else ""
         new_current = current_line + sep + current_word
         if len(new_current) > max_chars:
-            space_left = max_chars - len(current_line + sep)
+            breaks = break_points(current_word, hyphenator)
 
-            try:
-                if "-" in current_word:
-                    idx = current_word.index("-")
-                    total.appendleft(current_word[idx + 1 :])
-                    current_word = current_word[:idx]
-                    continue
-                elif hyphenator is not None:
-                    pairs = hyphenator.pairs(current_word)
-                else:
-                    pairs = []
-            except:
-                print("EXCEPTION WHEN HYPHENATING:", current_word)
-                pairs = []
-            if len(pairs) == 0:
+            if len(breaks) == 0:
                 if current_line == "" and len(current_word) > max_chars:
                     return None
                 lines.append(current_line)
                 current_line = ""
                 continue
 
-            pair = min(pairs, key=lambda a: len(current_line + sep + a[0] + "-"))
-            if len(current_line + sep + pair[0] + "-") > space_left:
+            # The last break that fits rather than the first. A line filled to
+            # its width leaves fewer lines to find room for, and fewer lines is
+            # what lets the next size up be tried at all.
+            fitting = [
+                b for b in breaks if len(current_line + sep + b[0]) <= max_chars
+            ]
+            head, tail = max(fitting, key=lambda b: len(b[0])) if fitting else breaks[0]
+
+            if len(current_line + sep + head) > max_chars:
                 lines.append(current_line)
-                if len(pair[0] + "-") <= max_chars:
-                    lines.append(pair[0] + "-")
+                if len(head) <= max_chars:
+                    lines.append(head)
                     current_line = ""
-                    current_word = pair[1]
+                    current_word = tail
                     continue
                 else:
                     return None
 
-            lines.append(current_line + sep + pair[0] + "-")
+            lines.append(current_line + sep + head)
             current_line = ""
-            current_word = pair[1]
+            current_word = tail
         elif len(total) == 0:
             lines.append(current_line + sep + current_word)
             current_word = ""
@@ -601,7 +666,10 @@ def wrap_text(text: str, max_chars: int, hyphenator: Union[Hyphenator, None]):
             current_line = new_current
             current_word = total.popleft() if len(total) else ""
 
-    return try_merge_hyphenated(lines, max_chars)
+    return [
+        line.replace(SOFT_HYPHEN, "-")
+        for line in try_merge_hyphenated(lines, max_chars)
+    ]
 
 
 def natural_sort_key(name: str):
@@ -877,7 +945,152 @@ def get_best_font_size(
             best = (size, fitted[0], fitted[1])
             low = size + 1
 
-    return best if best is not None else (None, None, None)
+    if best is None:
+        return None, None, None
+
+    size, lines, line_height = best
+
+    # The largest size that fits is not always the one to letter at. A word cut
+    # in half across two lines is the thing a reader notices first, and a point
+    # or two of size is not: where a slightly smaller size holds the same text
+    # with every word whole, it wins. Only a couple of points are on offer,
+    # because below that the bubble starts to look like it belongs to a quieter
+    # scene than it does.
+    if any(line.endswith("-") for line in lines):
+        for smaller in range(size - 1, max(min_size, size - HYPHEN_TOLERANCE) - 1, -1):
+            fitted = attempt(smaller)
+
+            if fitted is not None and not any(line.endswith("-") for line in fitted[0]):
+                return smaller, fitted[0], fitted[1]
+
+    return size, lines, line_height
+
+
+def overlap_area(one, other) -> float:
+    """How much of the page two boxes both cover."""
+    ax1, ay1, ax2, ay2 = one
+    bx1, by1, bx2, by2 = other
+
+    width = min(ax2, bx2) - max(ax1, bx1)
+    height = min(ay2, by2) - max(ay1, by1)
+
+    return width * height if width > 0 and height > 0 else 0.0
+
+
+def separate_boxes(boxes: list) -> list:
+    """Pull apart any two lettering boxes that overlap.
+
+    One balloon drawn over another leaves the one behind with an interior that
+    runs under the one in front, and the two boxes meet at a corner. Whatever
+    each block of text is then set in, they are set on top of each other there.
+
+    The intrusion is trimmed off along whichever side it is shallower on, from
+    whichever of the two loses the smaller share of itself by giving it up. The
+    corner of a box is room the other one was already using.
+    """
+    boxes = [list(box) for box in boxes]
+
+    # Twice, because trimming one pair can leave a box sitting in a third.
+    for _ in range(2):
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                one, other = boxes[i], boxes[j]
+
+                width = min(one[2], other[2]) - max(one[0], other[0])
+                height = min(one[3], other[3]) - max(one[1], other[1])
+
+                if width <= 0 or height <= 0:
+                    continue
+
+                one_area = max(1, (one[2] - one[0]) * (one[3] - one[1]))
+                other_area = max(1, (other[2] - other[0]) * (other[3] - other[1]))
+
+                # Along the shallower side: cutting 20 pixels off a box costs
+                # less than cutting 200 off it.
+                if width <= height:
+                    axis, cut = 0, width
+                else:
+                    axis, cut = 1, height
+
+                loses_one = (cut * (one[3 - axis] - one[1 - axis])) / one_area
+                loses_other = (cut * (other[3 - axis] - other[1 - axis])) / other_area
+
+                trimmed = one if loses_one <= loses_other else other
+
+                # Off the side facing the other box, so the box keeps the room
+                # its own bubble is in.
+                if trimmed[axis] < (other if trimmed is one else one)[axis]:
+                    trimmed[axis + 2] -= cut
+                else:
+                    trimmed[axis] += cut
+
+    return [tuple(box) for box in boxes]
+
+
+def place_box(width: int, height: int, box, page_shape: tuple, avoid) -> tuple:
+    """Where to put a box this size so that it covers as little else as possible.
+
+    Centred on the region it grew from first, and then slid so that each of its
+    edges lines up with one of the region's. All of those still sit over the
+    balloon, so the lettering stays with the bubble it belongs to; what they
+    differ in is which way the extra room sticks out. A translation that outgrows
+    its bubble should take the room over the artwork, not the room over the next
+    bubble's words.
+    """
+    page_height, page_width = page_shape[:2]
+    x1, y1, x2, y2 = box
+    centre_x, centre_y = x1 + ((x2 - x1) / 2), y1 + ((y2 - y1) / 2)
+
+    best = None
+
+    for left in (centre_x - (width / 2), float(x1), float(x2 - width)):
+        for top in (centre_y - (height / 2), float(y1), float(y2 - height)):
+            at_x = int(max(0, min(page_width - width, round(left))))
+            at_y = int(max(0, min(page_height - height, round(top))))
+            candidate = (at_x, at_y, at_x + width, at_y + height)
+
+            # Ties go to the placement nearest the middle of the bubble, which
+            # is where a reader looks for its words.
+            drift = abs(at_x + (width / 2) - centre_x) + abs(
+                at_y + (height / 2) - centre_y
+            )
+            score = (sum(overlap_area(candidate, other) for other in avoid), drift)
+
+            if best is None or score < best[0]:
+                best = (score, candidate)
+
+    return best[1]
+
+
+# How much taller than wide a box has to be before it is treated as a column of
+# vertical Japanese rather than a shape English can be set in.
+COLUMN_ASPECT = 1.5
+
+
+def shapes_at(width: int, height: int, scale: float, page_width: int, page_height: int):
+    """The sizes worth trying for a box grown by this much.
+
+    Scaling a box keeps its shape, which is the right thing for a balloon and
+    the wrong thing for the tall narrow strip a line of vertical Japanese was
+    set in: three times the area of a column is a longer column, and English put
+    in it still comes out one word to a line with every other word broken in
+    half. For those, a squarer box of the same area is offered first -- the room
+    it takes is the room it was going to take anyway, just not all downwards.
+    """
+    grown_width = min(page_width, round(width * scale))
+    grown_height = min(page_height, round(height * scale))
+
+    shapes = [(grown_width, grown_height)]
+
+    if height > width * COLUMN_ASPECT:
+        squarer_width = min(page_width, round(math.sqrt(grown_width * grown_height)))
+        squarer_height = min(
+            page_height, round((grown_width * grown_height) / max(1, squarer_width))
+        )
+
+        shapes.insert(0, (squarer_width, squarer_height))
+
+    return shapes
 
 
 def fit_box(
@@ -889,15 +1102,18 @@ def fit_box(
     space_between_lines: int = 2,
     hyphenator: Union[Hyphenator, None] = None,
     max_scale: float = 2.5,
+    avoid=(),
 ) -> tuple[tuple[int, int, int, int], bool]:
     """How much room this text needs, and whether that is more than it was given.
 
     A long translation in a small bubble used to be shrunk until it fit, which
     at some point means unreadable, or dropped entirely when even that failed.
-    Instead the box is grown around its own centre until the text fits at the
-    minimum readable size. The caller is told when that happened, so the text
-    can be drawn on a backdrop - it is now over artwork, not over a cleaned
-    bubble.
+    Instead the box is grown until the text fits at the minimum readable size.
+    The caller is told when that happened, so the text can be drawn on a
+    backdrop - it is now over artwork, not over a cleaned bubble.
+
+    `avoid` is the boxes of everything else being lettered on this page. Room
+    is taken away from them where there is any other room to take.
     """
     page_height, page_width = page_shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box)
@@ -906,10 +1122,16 @@ def fit_box(
     if width <= 0 or height <= 0 or len(text.strip()) == 0:
         return (x1, y1, x2, y2), False
 
+    # The drawer strokes every glyph, and a stroke costs the block its own width
+    # on all four sides. A box measured without it is exactly a stroke too small
+    # for what goes in it, and the lines that fall off the bottom are simply
+    # never drawn.
+    margin = 2 * max(2, round(min_font_size / 6))
+
     def fits(w: int, h: int) -> bool:
         size, _, _ = get_best_font_size(
             text,
-            (w, h),
+            (max(1, w - margin), max(1, h - margin)),
             font_file=font_file,
             space_between_lines=space_between_lines,
             start_size=min_font_size,
@@ -922,24 +1144,21 @@ def fit_box(
     if fits(width, height):
         return (x1, y1, x2, y2), False
 
-    centre_x, centre_y = x1 + (width / 2), y1 + (height / 2)
     grown = (x1, y1, x2, y2)
     scale = 1.0
 
     while scale < max_scale:
         scale += 0.1
 
-        new_width = min(page_width, round(width * scale))
-        new_height = min(page_height, round(height * scale))
+        for new_width, new_height in shapes_at(
+            width, height, scale, page_width, page_height
+        ):
+            # Keep the text over the bubble it came from, off the page's edges,
+            # and off the other bubbles being lettered.
+            grown = place_box(new_width, new_height, box, page_shape, avoid)
 
-        # Keep the text over the bubble it came from, but never off the page.
-        new_x1 = int(max(0, min(page_width - new_width, round(centre_x - (new_width / 2)))))
-        new_y1 = int(max(0, min(page_height - new_height, round(centre_y - (new_height / 2)))))
-
-        grown = (new_x1, new_y1, new_x1 + new_width, new_y1 + new_height)
-
-        if fits(new_width, new_height):
-            return grown, True
+            if fits(new_width, new_height):
+                return grown, True
 
         if new_width == page_width and new_height == page_height:
             break
