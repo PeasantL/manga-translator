@@ -4,6 +4,7 @@ import numpy as np
 from ultralytics import YOLO
 from translator.utils import (
     make_bubble_mask,
+    separate_boxes,
     get_bounds_for_text,
     has_white,
     hub_file,
@@ -146,14 +147,30 @@ async def draw_page(
         if colors is None:
             colors = [(None, None) for _ in draw_boxes]
 
+        # Boxes that run into each other are pulled apart before anything is
+        # measured against them: two balloons overlapping on the page leave two
+        # interiors overlapping in the same corner, and text set in both is
+        # text set on top of itself.
+        draw_boxes = separate_boxes(draw_boxes)
+
         # The drawer says how much room the text needs. A translation too long
         # for its bubble is drawn over the surrounding art at a readable size,
         # on a backdrop, rather than being shrunk until nobody can read it.
         boxes = []
         to_draw = []
 
-        for bbox, translation, measured in zip(draw_boxes, translations, colors):
-            box, expanded = drawer.box_for(translation.text, bbox, frame.shape)
+        for index, (bbox, translation, measured) in enumerate(
+            zip(draw_boxes, translations, colors)
+        ):
+            # What this one has to keep off: every other region's own box, and
+            # the room already given to the regions lettered before it. Without
+            # it two bubbles side by side both grow towards the middle and are
+            # lettered one over the other.
+            avoid = boxes + [b for i, b in enumerate(draw_boxes) if i != index]
+
+            box, expanded = drawer.box_for(
+                translation.text, bbox, frame.shape, avoid=avoid
+            )
 
             (x1, y1, x2, y2) = box
             boxes.append(box)
