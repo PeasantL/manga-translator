@@ -749,20 +749,24 @@ def load_font(font_file: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_file, size)
 
 
-def get_model_path(model=""):
-    return os.path.join(os.path.abspath("./models"), model)
+def hub_file(repo: str, filename: str) -> str:
+    """The path to one file of a model repository, fetching it if it is not cached.
 
+    Every weight this pipeline runs now comes from the Hugging Face hub and lands
+    in HF_HOME, which is a volume in the compose file -- so a rebuild does not
+    re-download any of it, and there is no models directory to keep in step.
+    """
+    from huggingface_hub import hf_hub_download
 
-def require_model_file(path: str) -> str:
-    """Check that a model file exists, failing with download instructions if not."""
-    if not os.path.isfile(path):
+    try:
+        return hf_hub_download(repo, filename)
+    except Exception as error:
         raise FileNotFoundError(
-            f"Missing model weights: {os.path.abspath(path)}\n"
-            "Model files are not checked into the repository. Download them with:\n"
+            f"Could not get {filename} from {repo}: {error}\n"
+            "The weights are fetched on first use and cached in HF_HOME. Pre-fetch "
+            "them, or check the machine can reach huggingface.co, with:\n"
             "    ./fetch_models.sh"
-        )
-
-    return path
+        ) from error
 
 
 def font_line_height(font: ImageFont.FreeTypeFont) -> int:

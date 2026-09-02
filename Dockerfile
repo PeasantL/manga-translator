@@ -40,15 +40,14 @@ RUN apt-get update && \
     apt-get purge -y --auto-remove build-essential && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Weights that are not in the image. The two YOLO checkpoints come from a
-# volume that fetch_models.sh fills on first boot; manga-ocr and LaMa download
-# their own on first use, into these caches. All three are volumes so that a
-# rebuild does not re-download close to a gigabyte.
+# Weights are not in the image. All four models -- detection, segmentation,
+# cleaning and OCR -- are fetched from the Hugging Face hub the first time they
+# are used, into these caches. Volumes in the compose file, so a rebuild does
+# not re-download five gigabytes.
 # YOLO_CONFIG_DIR is set because ultralytics writes a settings file on import
 # and warns on every run when it cannot: /app belongs to the image, and the
 # container does not necessarily run as a user who can write there.
-ENV MODELS_DIR=/app/models \
-    HF_HOME=/cache/huggingface \
+ENV HF_HOME=/cache/huggingface \
     TORCH_HOME=/cache/torch \
     JOB_DIR=/jobs \
     PORT=1007 \

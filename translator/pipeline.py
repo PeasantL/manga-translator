@@ -3,11 +3,11 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 from translator.utils import (
-    mask_text_and_make_bubble_mask,
+    make_bubble_mask,
     get_bounds_for_text,
     has_white,
-    get_model_path,
-    require_model_file,
+    hub_file,
+    cv2_to_pil,
     apply_mask,
     reading_order_indices,
     measure_region_colors,
@@ -30,18 +30,84 @@ from translator.plugins import (
 )
 
 
-# The weights are read-only during inference, so one instance per path is enough
+# The detector. RT-DETR-v2, trained on 11k manga, webtoon, manhua and western
+# comic pages, and it reports three things where the YOLOv8 model that used to
+# be here reported two: the balloon, the text inside the balloon, and text that
+# is in no balloon at all. Having the text apart from the balloon is what lets
+# the reader be given the lettering and the letterer the whole balloon.
+DETECT_REPO = "ogkalu/comic-text-and-bubble-detector"
+
+# The segmenter. YOLOv8m trained at 1024 pixels on the same sorts of page; it
+# marks text pixels wherever they are, and what it marks is what gets erased.
+SEGMENT_REPO = "ogkalu/comic-text-segmenter-yolov8m"
+SEGMENT_WEIGHTS = "comic-text-segmenter.pt"
+
+# How much of a free text box the segmenter has to have marked before the whole
+# box is erased rather than just what it marked. See process_ml_results.
+FREE_TEXT_COVERAGE = 0.2
+
+# The weights are read-only during inference, so one instance per model is enough
 # for the whole process, however many FullConversions are built over its life.
 _yolo_models: dict[str, YOLO] = {}
+_detectors: dict[str, tuple] = {}
 
 
-def load_yolo(path: str) -> YOLO:
-    resolved = require_model_file(path)
+def load_detector(repo: str, device):
+    """The detection model and the processor that feeds it, loaded once."""
+    key = f"{repo} on {device}"
 
-    if resolved not in _yolo_models:
-        _yolo_models[resolved] = YOLO(resolved)
+    if key not in _detectors:
+        from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
-    return _yolo_models[resolved]
+        _detectors[key] = (
+            AutoModelForObjectDetection.from_pretrained(repo).to(device).eval(),
+            AutoImageProcessor.from_pretrained(repo),
+        )
+
+    return _detectors[key]
+
+
+def load_yolo(repo: str, filename: str = SEGMENT_WEIGHTS) -> YOLO:
+    path = hub_file(repo, filename)
+
+    if path not in _yolo_models:
+        _yolo_models[path] = YOLO(path)
+
+    return _yolo_models[path]
+
+
+def clamp_box(box, width: int, height: int):
+    """A box cut to the page, or None if there is nothing left of it.
+
+    The detector answers in the coordinates of the page it was given, but it
+    predicts them rather than reading them off, so a box around something at the
+    edge can start a few pixels outside it. Negative coordinates index from the
+    far end of an array, which turns a box at the left margin into a slice of
+    the right one.
+    """
+    x1, y1, x2, y2 = box
+
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(width, x2), min(height, y2)
+
+    return None if x2 <= x1 or y2 <= y1 else (x1, y1, x2, y2)
+
+
+def crop_with_margin(frame: np.ndarray, box, margin: int = 4) -> np.ndarray:
+    """A copy of what is inside a box, with a little of the page around it.
+
+    A copy because the page is painted over region by region as it is cleaned,
+    and whatever reads this has to see the lettering that was there. The margin
+    is because a box drawn tight against the glyphs clips the strokes that lean
+    out of them, and half a stroke reads as a different character.
+    """
+    height, width = frame.shape[:2]
+    (x1, y1, x2, y2) = box
+
+    return frame[
+        max(0, y1 - margin):min(height, y2 + margin),
+        max(0, x1 - margin):min(width, x2 + margin),
+    ].copy()
 
 
 async def draw_page(
@@ -146,13 +212,14 @@ class PageLayout:
 class FullConversion:
     def __init__(
         self,
-        detect_model: Union[str, None] = None,
-        seg_model: Union[str, None] = None,
+        detect_model: str = DETECT_REPO,
+        seg_model: str = SEGMENT_REPO,
         translator: Union[Translator, None] = None,
         ocr: Union[Ocr, None] = None,
         drawer: Union[Drawer, None] = None,
         cleaner: Union[Cleaner, None] = None,
         translate_free_text: bool = False,
+        min_confidence: float = 0.4,
         device=None,
         yolo_device=None,
         debug=False,
@@ -167,19 +234,17 @@ class FullConversion:
         if yolo_device is None:
             yolo_device = 0 if torch.cuda.is_available() else "cpu"
 
-        if detect_model is None:
-            detect_model = get_model_path("detection.pt")
-
-        if seg_model is None:
-            seg_model = get_model_path("segmentation.pt")
-
         self.device = device
         print("Pipeline created using",device)
         self.yolo_device = yolo_device
         self.segmentation_model = load_yolo(seg_model)
-        self.detection_model = load_yolo(detect_model)
+        self.detection_model, self.detect_processor = load_detector(detect_model, device)
 
         self.translate_free_text = translate_free_text
+        # Below this a detection is not reported at all. The detector answers
+        # with a fixed number of guesses however little is on the page, so the
+        # tail of that list is nothing at all seen faintly.
+        self.min_confidence = min_confidence
         self.translator = translator if translator is not None else Translator()
         self.ocr = ocr if ocr is not None else Ocr()
         self.drawer = drawer if drawer is not None else HorizontalDrawer()
@@ -196,46 +261,116 @@ class FullConversion:
         if self.progress is not None:
             self.progress(stage, done, total)
 
-    def filter_results(self, results, min_confidence=0.1):
-        bounding_boxes = np.array(results.boxes.xyxy.cpu(), dtype="int")
+    def detect(self, frames: list[np.ndarray]) -> list[list[tuple]]:
+        """Stage 1 for a chunk of pages: what is on each of them, and where.
 
-        classes = np.array(results.boxes.cls.cpu(), dtype="int")
+        One entry per page, each a list of ((x1, y1, x2, y2), class, confidence)
+        sorted from the most confident down, which is the shape the rest of this
+        file has always taken a page's detections in.
+        """
+        images = [cv2_to_pil(frame) for frame in frames]
+        sizes = torch.tensor([image.size[::-1] for image in images]).to(self.device)
 
-        confidence = np.array(results.boxes.conf.cpu(), dtype="float")
+        with torch.inference_mode():
+            inputs = self.detect_processor(images=images, return_tensors="pt").to(
+                self.device
+            )
+            outputs = self.detection_model(**inputs)
 
-        raw_results: list[tuple[tuple[int, int, int, int], str, float]] = []
+        pages = self.detect_processor.post_process_object_detection(
+            outputs, target_sizes=sizes, threshold=self.min_confidence
+        )
 
-        for box, obj_class, conf in zip(bounding_boxes, classes, confidence):
-            if conf >= min_confidence:
-                raw_results.append((box, results.names[obj_class], conf))
+        names = self.detection_model.config.id2label
+        detections = []
 
-        raw_results.sort(key=lambda a: 1 - a[2])
+        for page, frame in zip(pages, frames):
+            height, width = frame.shape[:2]
 
-        return raw_results
+            found = [
+                (
+                    clamp_box([int(round(float(v))) for v in box], width, height),
+                    names[int(label)],
+                    float(score),
+                )
+                for box, label, score in zip(
+                    page["boxes"].cpu(), page["labels"].cpu(), page["scores"].cpu()
+                )
+            ]
 
-    async def process_ml_results(self, detect_result, seg_result, frame):
+            found.sort(key=lambda a: 1 - a[2])
+            detections.append([d for d in found if d[0] is not None])
+
+        return detections
+
+    def text_in(self, bubble, detections):
+        """The box of the text a balloon holds, if the detector found any in it.
+
+        A balloon with no text box inside it is one nobody spoke in -- an empty
+        one, or a tail caught on its own -- and there is nothing there to read
+        or to letter.
+        """
+        (bx1, by1, bx2, by2) = bubble
+        best = None
+
+        for box, cls, conf in detections:
+            if cls != "text_bubble":
+                continue
+
+            (x1, y1, x2, y2) = box
+            middle_x, middle_y = (x1 + x2) / 2, (y1 + y2) / 2
+
+            if not (bx1 <= middle_x <= bx2 and by1 <= middle_y <= by2):
+                continue
+
+            if best is None or conf > best[1]:
+                best = (box, conf)
+
+        return None if best is None else best[0]
+
+    async def process_ml_results(self, detections, seg_result, frame):
         text_mask = np.zeros_like(frame, dtype=frame.dtype)
 
         if seg_result.masks is not None:  # Fill in segmentation results
             for seg in list(map(lambda a: a.astype("int"), seg_result.masks.xy)):
                 cv2.fillPoly(text_mask, [seg], (255, 255, 255))
 
-        detect_result = self.filter_results(detect_result)
+        # Text outside a balloon used to be filled into the mask as a solid
+        # rectangle and painted out whole. On this detector that erases the
+        # chapter title and the artwork it is set over, because it finds titles
+        # and logos where the old one saw nothing.
+        #
+        # So the two models have to agree. Where the segmenter marks a good part
+        # of a free text box, it is a block of lettering and the whole box goes:
+        # a mask that misses one stroke leaves half a character standing in the
+        # artwork, which reads worse than a clean patch. Where it marks none of
+        # it, the box is a logo or a piece of the drawing, and nothing goes.
+        # There is no middle to speak of -- on the sample pages it is 60% of the
+        # box or none of it -- so where the line falls between them hardly
+        # matters.
+        for bbox, cls, conf in detections:
+            if cls != "text_free":
+                continue
 
-        for bbox, cls, conf in detect_result:  # fill in text free results
-            if cls == "text_free":
-                (x1, y1, x2, y2) = bbox
-                text_mask = cv2.rectangle(
-                    text_mask, (x1, y1), (x2, y2), (255, 255, 255), -1
-                )
+            (x1, y1, x2, y2) = bbox
+            marked = text_mask[y1:y2, x1:x2]
+
+            if marked.size > 0 and (marked > 0).mean() >= FREE_TEXT_COVERAGE:
+                cv2.rectangle(text_mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+
+        # The cleaner works a window at a time, and these are the windows: where
+        # the detector found lettering. A balloon is not one of them, because the
+        # text box inside it already is and the rest of a balloon is the empty
+        # white around the words.
+        windows = [d for d in detections if d[1] in ("text_bubble", "text_free")]
 
         frame_clean, text_mask = await self.cleaner(
-            frame=frame, mask=text_mask, detection_results=detect_result
-        )  # segmentation_results.boxes.xyxy.cpu().numpy()
+            frame=frame, mask=text_mask, detection_results=windows
+        )
 
-        return frame, frame_clean, text_mask, detect_result
+        return frame, frame_clean, text_mask, detections
 
-    async def prepare_frame(self, detect_result, seg_result, input_frame) -> "PageLayout":
+    async def prepare_frame(self, detections, seg_result, input_frame) -> "PageLayout":
         """Stages 1 to 3 for one page: detect, clean, and collect its text regions.
 
         Returns the cleaned page plus the regions to translate, in reading order.
@@ -243,84 +378,72 @@ class FullConversion:
         whole chapter so the translator can use the surrounding dialogue.
         """
         try:
-            frame, frame_clean, text_mask, detect_result = await self.process_ml_results(
-                detect_result, seg_result, input_frame
+            frame, frame_clean, text_mask, detections = await self.process_ml_results(
+                detections, seg_result, input_frame
             )
 
             to_translate = []
-            # First pass, mask all bubbles
-            for bbox, cls, conf in detect_result:
+            # Which text boxes a balloon has already spoken for. Two balloons
+            # drawn around the same words -- a bubble inside a bubble, or the
+            # same one found twice -- would otherwise have that line translated
+            # and lettered once each, and the most confident of them is the one
+            # worth keeping. What is unclaimed at the end is text the detector
+            # put in no balloon it also found, and that is read on its own
+            # rather than dropped.
+            claimed = set()
+
+            for bbox, cls, conf in detections:
                 try:
-                    color = (0, 0, 255) if cls == "text_free" else (0, 255, 0)
+                    if cls == "bubble":
+                        region, text_box = self.read_bubble(
+                            bbox, detections, frame, frame_clean, text_mask
+                        )
 
-                    (x1, y1, x2, y2) = bbox
+                        if region is not None and text_box not in claimed:
+                            claimed.add(text_box)
+                            to_translate.append(region)
+                    elif cls == "text_free" and self.translate_free_text:
+                        region = self.read_loose_text(
+                            bbox, frame, frame_clean, text_mask
+                        )
 
-                    class_name = cls
-
-                    bubble = frame[y1:y2, x1:x2]
-                    bubble_clean = frame_clean[y1:y2, x1:x2]
-                    bubble_text_mask = text_mask[y1:y2, x1:x2]
-
-                    if class_name == "text_bubble":
-                        if has_white(bubble_text_mask):
-                            text_only, bubble_mask = mask_text_and_make_bubble_mask(
-                                bubble, bubble_text_mask, bubble_clean
-                            )
-
-                            # Measured before the original text is painted over,
-                            # because it is the only moment the page still has
-                            # the lettering on it.
-                            colors = measure_region_colors(
-                                bubble, bubble_clean, bubble_text_mask
-                            )
-
-                            frame[y1:y2, x1:x2] = bubble_clean
-                            text_draw_bounds = get_bounds_for_text(bubble_mask)
-
-                            pt1, pt2 = text_draw_bounds
-
-                            pt1_x, pt1_y = pt1
-                            pt2_x, pt2_y = pt2
-
-                            pt1_x += x1
-                            pt2_x += x1
-                            pt1_y += y1
-                            pt2_y += y1
-
-                            to_translate.append(
-                                [(pt1_x, pt1_y, pt2_x, pt2_y), text_only, colors]
-                            )
-                    else:
-                        if self.translate_free_text:
-                            free_text = frame[y1:y2, x1:x2]
-                            if has_white(bubble_text_mask):
-                                text_only, _ = mask_text_and_make_bubble_mask(
-                                    free_text, bubble_text_mask, bubble_clean
-                                )
-                                colors = measure_region_colors(
-                                    free_text, bubble_clean, bubble_text_mask
-                                )
-
-                                to_translate.append(
-                                    [(x1, y1, x2, y2), text_only, colors]
-                                )
-
-                            frame[y1:y2, x1:x2] = frame_clean[y1:y2, x1:x2]
-                        else:
-                            frame[y1:y2, x1:x2] = frame_clean[y1:y2, x1:x2]
+                        if region is not None:
+                            to_translate.append(region)
 
                     if self.debug:
+                        (x1, y1, x2, y2) = bbox
                         cv2.putText(
                             frame,
                             str(f"{cls} | {conf * 100:.1f}%"),
                             (x1, y1 - 20),
                             cv2.FONT_HERSHEY_PLAIN,
                             1,
-                            color,
+                            (0, 0, 255) if cls == "text_free" else (0, 255, 0),
                             2,
                         )
                 except:
                     traceback.print_exc()
+
+            # A balloon the detector missed while finding the text inside it
+            # would otherwise take a line of dialogue out of the chapter. There
+            # is no balloon to fit the translation to, so it is lettered into
+            # the box the original text filled.
+            for bbox, cls, conf in detections:
+                if cls != "text_bubble" or bbox in claimed:
+                    continue
+
+                region = self.read_loose_text(bbox, frame, frame_clean, text_mask)
+
+                if region is not None:
+                    to_translate.append(region)
+
+            # Every region is painted clean, whether or not it is being
+            # translated, and only once everything above has read what it needs
+            # off the page. Erasing the text is the one thing that happens
+            # everywhere something was found.
+            for bbox, cls, conf in detections:
+                (x1, y1, x2, y2) = bbox
+                frame[y1:y2, x1:x2] = frame_clean[y1:y2, x1:x2]
 
             # Detections arrive in confidence order, which is meaningless as reading
             # order. Sort them the way the page is read so that the translator sees
@@ -338,6 +461,55 @@ class FullConversion:
         except:
             traceback.print_exc()
             return PageLayout(frame=input_frame, draw_boxes=[], text_crops=[])
+
+    def read_bubble(self, bbox, detections, frame, frame_clean, text_mask):
+        """One balloon: where to letter it, what it says, and in what colours.
+
+        The box handed back is the balloon's interior rather than the box the old
+        lettering filled, because a translation is not the shape of what it
+        replaces and a balloon is the room there is for it. The crop handed back
+        is the lettering itself, off the page as it was before cleaning.
+        """
+        (x1, y1, x2, y2) = bbox
+
+        bubble = frame[y1:y2, x1:x2]
+        bubble_clean = frame_clean[y1:y2, x1:x2]
+        bubble_text_mask = text_mask[y1:y2, x1:x2]
+
+        text_box = self.text_in(bbox, detections)
+
+        if text_box is None or not has_white(bubble_text_mask):
+            return None, None
+
+        # Measured before the original text is painted over, because it is the
+        # only moment the page still has the lettering on it.
+        colors = measure_region_colors(bubble, bubble_clean, bubble_text_mask)
+        crop = crop_with_margin(frame, text_box)
+
+        (pt1_x, pt1_y), (pt2_x, pt2_y) = get_bounds_for_text(
+            make_bubble_mask(bubble_clean)
+        )
+
+        return [
+            (pt1_x + x1, pt1_y + y1, pt2_x + x1, pt2_y + y1),
+            crop,
+            colors,
+        ], text_box
+
+    def read_loose_text(self, bbox, frame, frame_clean, text_mask):
+        """Text with no balloon around it, lettered back into its own box."""
+        (x1, y1, x2, y2) = bbox
+
+        section = frame[y1:y2, x1:x2]
+        section_clean = frame_clean[y1:y2, x1:x2]
+        section_mask = text_mask[y1:y2, x1:x2]
+
+        if not has_white(section_mask):
+            return None
+
+        colors = measure_region_colors(section, section_clean, section_mask)
+
+        return [(x1, y1, x2, y2), crop_with_margin(frame, bbox), colors]
 
     async def render_frame(self, page: "PageLayout", translations: list) -> np.ndarray:
         """Stage 6 for one page: draw the chapter's translations back into it."""
@@ -368,13 +540,13 @@ class FullConversion:
         finished = 0
         start = time.time()
 
-        async def prepare_one(detect_result, seg_result, frame, label):
+        async def prepare_one(detections, seg_result, frame, label):
             # Pages within a chunk are prepared concurrently, so the count is
             # incremented as each one lands rather than in index order.
             nonlocal finished
 
             page = await self.prepare_frame(
-                detect_result=detect_result, seg_result=seg_result, input_frame=frame
+                detections=detections, seg_result=seg_result, input_frame=frame
             )
 
             finished += 1
@@ -390,14 +562,14 @@ class FullConversion:
             chunk = images[i:i + detect_batch_size]
             chunk_labels = labels[i:i + detect_batch_size]
 
-            detections = self.detection_model(chunk, device=self.yolo_device, verbose=False)
+            detections = self.detect(chunk)
             segmentations = self.segmentation_model(chunk, device=self.yolo_device, verbose=False)
 
             pages.extend(
                 await asyncio.gather(
                     *[
-                        prepare_one(detect_result, seg_result, frame, label)
-                        for detect_result, seg_result, frame, label in zip(
+                        prepare_one(detections, seg_result, frame, label)
+                        for detections, seg_result, frame, label in zip(
                             detections, segmentations, chunk, chunk_labels
                         )
                     ]
