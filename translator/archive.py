@@ -243,14 +243,18 @@ def translated_comicinfo(
 
     # Appended rather than replaced: Notes is where the download recorded which
     # gallery this came from, and that is still true of the translation.
-    # Guarded on the marker rather than the whole sentence, which carries a date
-    # and so would not match itself on a later day -- translating twice would
-    # otherwise leave two of these behind, as the title would without its own
-    # guard above.
-    marker = f"Translated to {target_lang} by manga-translator"
+    # Guarded on the opening of the sentence rather than the whole of it, which
+    # carries a date and so would not match itself on a later day -- translating
+    # twice would otherwise leave two of these behind, as the title would
+    # without its own guard above. The guard stops short of the name so that it
+    # still recognises the sentence a chapter picked up back when this was
+    # called manga-translator: that line stays as it was written, but it does
+    # not get a second one under the new name beside it.
+    guard = f"Translated to {target_lang} by"
+    marker = f"{guard} MangaTranslate"
     notes = _child(root, "Notes")
 
-    if marker not in (notes.text or ""):
+    if guard not in (notes.text or ""):
         note = f"{marker} on {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
         notes.text = f"{notes.text}. {note}" if notes.text else note
 

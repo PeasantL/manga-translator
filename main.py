@@ -251,7 +251,7 @@ async def do_convert(chapters: list, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="Manga Translator",
+        prog="MangaTranslate",
         description="Translates Manga Pages",
         formatter_class=SmartFormatter,
         exit_on_error=True

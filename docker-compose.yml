@@ -1,9 +1,9 @@
-name: manga-translator
+name: mangatranslate
 
 services:
-  manga-translator:
+  mangatranslate:
     build: .
-    container_name: manga-translator
+    container_name: mangatranslate
     ports:
       - "${PORT:-1007}:1007"
     environment:
@@ -39,7 +39,7 @@ volumes:
   jobs:
 
 # The same external network Komga and mangaserver are on, so that mangaserver
-# reaches this as http://manga-translator:1007 rather than back out through the
+# reaches this as http://mangatranslate:1007 rather than back out through the
 # host's published port.
 networks:
   default:

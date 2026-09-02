@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="manga-translator", lifespan=lifespan)
+app = FastAPI(title="mangatranslate", lifespan=lifespan)
 
 # The pipeline, built on first use and kept for the life of the process.
 # Building it loads three models and costs the better part of ten seconds, so
