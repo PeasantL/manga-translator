@@ -34,18 +34,36 @@ from fastapi.responses import FileResponse
 
 from translator import archive
 from translator.chapter import ChapterDocument, build_document
-from translator.pipeline import FullConversion, draw_page
+from translator.pipeline import (
+    DETECT_REPO,
+    SEGMENT_REPO,
+    SEGMENT_WEIGHTS,
+    FullConversion,
+    draw_page,
+)
 from translator.plugins import (
     DebugTranslator,
     DeepSeekTranslator,
     HorizontalDrawer,
-    JapaneseOcr,
+    ComicOcr,
     OcrResult,
     TranslatorResult,
 )
+from translator.plugins.cleaning import REPO as LAMA_REPO, WEIGHTS as LAMA_WEIGHTS
+from translator.plugins.ocr import MODEL as OCR_REPO
 from translator.utils import read_image, write_image
 
 log = logging.getLogger("translator.service")
+
+# The four sets of weights the pipeline runs on, each as the repository it
+# comes from and one file that has to be in it. Enough to tell a cold cache
+# from a warm one without loading anything.
+WEIGHTS = [
+    (DETECT_REPO, "model.safetensors"),
+    (SEGMENT_REPO, SEGMENT_WEIGHTS),
+    (LAMA_REPO, LAMA_WEIGHTS),
+    (OCR_REPO, "model.safetensors"),
+]
 
 JOB_DIR = Path(os.environ.get("JOB_DIR", "jobs"))
 TARGET_LANG = os.environ.get("TARGET_LANG", "en")
@@ -126,7 +144,7 @@ def get_pipeline() -> FullConversion:
             chosen(text="TRANSLATED") if chosen is DebugTranslator
             else chosen(target_lang=TARGET_LANG)
         )
-        _pipeline = FullConversion(ocr=JapaneseOcr(), translator=translator)
+        _pipeline = FullConversion(ocr=ComicOcr(), translator=translator)
 
     return _pipeline
 
@@ -145,16 +163,18 @@ async def healthz():
     """Whether this can take a job, and what it would run it on.
 
     Reports the models as present or not rather than loading them, so that a
-    health check never has the side effect of pulling a gigabyte into memory.
+    health check never has the side effect of pulling four gigabytes into
+    memory, or of downloading them.
     """
     import torch
+    from huggingface_hub import try_to_load_from_cache
 
-    models = Path(os.environ.get("MODELS_DIR", "models"))
+    cached = [try_to_load_from_cache(repo, name) for repo, name in WEIGHTS]
 
     return {
         "status": "ok",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "models": all((models / m).is_file() for m in ("detection.pt", "segmentation.pt")),
+        "models": all(isinstance(path, str) for path in cached),
         "loaded": _pipeline is not None,
         "busy": _job is not None and _job["state"] == "running",
         "target_lang": TARGET_LANG,
@@ -162,7 +182,7 @@ async def healthz():
         # Which sources the OCR can actually read, as opposed to which ones a
         # prompt exists for. A caller worth the name checks this before
         # sending something the reader will only turn into noise.
-        "reads": list(JapaneseOcr.READS),
+        "reads": list(ComicOcr.READS),
     }
 
 
@@ -255,14 +275,14 @@ async def submit(
 
     source = (source_lang or SOURCE_LANG).strip().lower()
 
-    if source not in JapaneseOcr.READS:
+    if source not in ComicOcr.READS:
         # Not refused: the prompt for it exists and the rest of the pipeline
         # runs, so this is a warning about the quality of the result rather
         # than a reason not to produce one.
         log.warning(
-            "job asked for %s, which the OCR cannot read -- it reads %s only",
+            "job asked for %s, which the OCR cannot read -- it reads %s",
             source,
-            ", ".join(sorted(JapaneseOcr.READS)),
+            ", ".join(sorted(ComicOcr.READS)),
         )
 
     source_cbz = workdir / "source.cbz"

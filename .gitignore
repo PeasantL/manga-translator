@@ -26,8 +26,8 @@ input/*
 output/*
 !output/.gitkeep
 
-# Weights that manga-ocr and LaMa download for themselves on first run. Bound
-# into the container as a volume so a rebuild does not re-fetch them.
+# Where the models' weights are cached once fetched from the Hugging Face hub.
+# Bound into the container as a volume so a rebuild does not re-fetch them.
 cache/
 
 # Scratch for the chapter service.py has in flight.

@@ -10,14 +10,21 @@ Forked from [TareHimself/manga-translator](https://github.com/TareHimself/manga-
 A folder is one chapter. It runs through six stages, in
 `translator/pipeline.py`:
 
-| # | Stage | What it does |
-|---|-------|--------------|
-| 1 | Detection | [YOLOv8](https://github.com/ultralytics/ultralytics) finds speech bubbles and free text |
-| 2 | Segmentation | A second YOLO model masks the text pixels inside them |
-| 3 | Cleaning | [LaMa](https://github.com/advimman/lama) inpaints the text away |
-| 4 | OCR | [manga-ocr](https://huggingface.co/TareHimself/manga-ocr-base) reads every bubble in the chapter, in reading order |
-| 5 | Translation | DeepSeek translates that whole list in one request |
-| 6 | Drawing | PIL lays the translation out and draws it into the cleaned bubble |
+| # | Stage | Model | What it does |
+|---|-------|-------|--------------|
+| 1 | Detection | [comic-text-and-bubble-detector](https://huggingface.co/ogkalu/comic-text-and-bubble-detector) | RT-DETR-v2 finds the balloons, the text inside them, and text in no balloon |
+| 2 | Segmentation | [comic-text-segmenter](https://huggingface.co/ogkalu/comic-text-segmenter-yolov8m) | YOLOv8m marks the text pixels themselves, which is what gets erased |
+| 3 | Cleaning | [AnimeMangaInpainting](https://huggingface.co/TareHimself/AnimeMangaInpainting-torchscript) | [LaMa](https://github.com/advimman/lama), finetuned on anime and manga, paints the text away |
+| 4 | OCR | [PaddleOCR-VL-For-Manga](https://huggingface.co/jzhang533/PaddleOCR-VL-For-Manga) | A 1B vision language model reads every region in the chapter, in reading order |
+| 5 | Translation | `deepseek-v4-pro` | DeepSeek translates that whole list in one request |
+| 6 | Drawing | — | PIL lays the translation out and draws it into the cleaned bubble |
+
+Stage 1 tells the balloon apart from the lettering in it, which is what lets each
+half go where it is useful: the reader is handed the lettering alone, and the
+letterer is handed the whole balloon to fit a translation into. Text the detector
+finds outside a balloon is erased only where the segmenter agrees it is
+lettering — otherwise a chapter title or a logo, which this detector does find,
+would be painted out along with the artwork behind it.
 
 Stages 1 to 3 and stage 6 run per page. Stages 4 and 5 run once for the whole
 chapter: every page is detected and cleaned first, then the chapter's dialogue is
@@ -28,6 +35,10 @@ bottom, right to left within a row — and sent together.
 
 Chapters longer than the translator's `max_lines` (200 by default) are split
 across requests, with the previous lines carried over as context.
+
+The OCR reads Japanese best — that is what it was finetuned on — and Chinese as
+well as the model it was finetuned from did, which is less well. Everything
+before it is trained on manga, manhua, webtoons and western comics alike.
 
 ### The three stages
 
@@ -81,7 +92,9 @@ takes a backend by its index in that list.
 Each stage deliberately carries one good backend rather than a menu. The
 alternatives that used to be here — EasyOCR, Tesseract, DeepFillV2, OpenAI,
 Gemini, Google Cloud, Helsinki-NLP, DeepL — were either worse on manga specifically,
-broken, or duplicated something that remains.
+broken, or duplicated something that remains. The backends that stage 1 to 4
+carry today replaced a set trained in 2022 and 2023: a pair of YOLOv8 models
+that knew manga only, the generic photographic LaMa, and manga-ocr.
 
 ## Install
 
@@ -114,21 +127,16 @@ pip install -r requirements.txt
 
 ### 3. Model weights
 
-The weights are not in the repository. Download them into `models/`:
+Nothing has to be downloaded by hand: each of the four models is fetched from
+the Hugging Face hub the first time it is used and cached in `HF_HOME` — a
+volume in the compose file, so a rebuild does not fetch them again. About 5 GB
+in total, most of it the OCR model.
+
+To get the download over with before a chapter is waiting on it:
 
 ```bash
 ./fetch_models.sh
 ```
-
-That fetches the two required models (~258 MB):
-
-| File | Size | Used by |
-|------|------|---------|
-| `detection.pt` | 50 MB | Bubble and free-text detection |
-| `segmentation.pt` | 208 MB | Text segmentation |
-
-The LaMa cleaner and manga-ocr download their own weights the first time they
-run, so they are not listed here.
 
 ## Usage
 
@@ -268,17 +276,16 @@ the language does:
 
 Anything else falls back to a generic comics prompt rather than failing.
 
-The caller sends it because this process cannot work it out: the OCR reports
-the one language it was trained on whatever it was given. `SOURCE_LANG` is only
-the default for a caller that says nothing.
+The caller sends it because it is the one that knows: the OCR reports the script
+it read rather than the language a chapter is in, and kanji alone are not enough
+to tell Japanese from Chinese. `SOURCE_LANG` is the default for a caller that
+says nothing.
 
-> **The OCR reads Japanese only.** manga-ocr is trained on Japanese manga and
-> turns anything else into plausible-looking Japanese nonsense — which is worse
-> than an empty bubble, because it then translates cleanly. The prompts and the
-> plumbing around them are in place ahead of a reader that can use them; a
-> `zh` job today gets the right prompt applied to whatever manga-ocr made of
-> the text, and logs a warning saying so. `GET /healthz` reports what the OCR
-> actually `reads`, which is what a caller should check.
+> **The OCR reads Japanese and Chinese**, and Japanese much better — the model
+> was finetuned on Japanese manga, and its Chinese is what the base model came
+> with. A job in anything else gets the right prompt applied to whatever the
+> reader made of the text, and logs a warning saying so. `GET /healthz` reports
+> what the OCR actually `reads`, which is what a caller should check.
 
 The source's `ComicInfo.xml` is carried across with its artist, tags and origin
 intact — the translation is the same book — and only what is no longer true
@@ -292,7 +299,7 @@ over an already-translated file adds none of them twice.
 | `SOURCE_LANG` | `ja` | What to read a chapter as when the caller does not say. Picks the prompt |
 | `TRANSLATOR` | `deepseek` | `debug` letters a fixed string instead, and needs no API key |
 | `JOB_DIR` | `jobs` | Scratch for the chapter in flight. Cleared at startup |
-| `MODELS_DIR` | `models` | Where `fetch_models.sh` puts the YOLO weights |
+| `HF_HOME` | | Where the model weights are cached. `/cache/huggingface` in the container |
 
 ### API keys
 
@@ -338,13 +345,13 @@ the result depends on which model and target language you translate with.
 main.py                     the CLI
 service.py                  the job API: a CBZ in, a translated CBZ out
 run.sh                      venv, dependencies, then every chapter in input/
-fetch_models.sh             downloads the YOLO weights into models/
+fetch_models.sh             pre-fetches every model's weights into the cache
 Dockerfile                  CUDA image for the service
-docker-compose.yml          the service, with the weights and caches as volumes
+docker-compose.yml          the service, with the weight cache and jobs as volumes
 translator/
     chapter.py              what a chapter is, and the JSON passed between stages
     archive.py              CBZ to chapter folder and back, and ComicInfo
-    pipeline.py             the six stages, wired together
+    pipeline.py             the six stages, wired together; stages 1 and 2 live here
     utils.py                image, text layout and colour helpers
     plugins/
         base.py             what a backend has to implement
@@ -353,7 +360,7 @@ translator/
         ocr.py              stage 4
         translation.py      stage 5
         drawing.py          stage 6
-input/  output/  fonts/  models/  examples/
+input/  output/  fonts/  examples/
 ```
 
 ## Glossary

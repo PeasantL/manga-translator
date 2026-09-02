@@ -22,7 +22,7 @@ from translator.plugins.base import (
 )
 from translator.plugins.cleaning import LamaCleaner
 from translator.plugins.drawing import HorizontalDrawer
-from translator.plugins.ocr import JapaneseOcr, NoOcr
+from translator.plugins.ocr import ComicOcr, NoOcr
 from translator.plugins.translation import DebugTranslator, DeepSeekTranslator
 
 
@@ -31,7 +31,7 @@ def get_cleaners() -> list[type[Cleaner]]:
 
 
 def get_ocr() -> list[type[Ocr]]:
-    return [x for x in [JapaneseOcr, NoOcr] if x.is_valid()]
+    return [x for x in [ComicOcr, NoOcr] if x.is_valid()]
 
 
 def get_translators() -> list[type[Translator]]:

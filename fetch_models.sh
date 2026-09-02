@@ -1,27 +1,20 @@
 #!/bin/bash
 #
-# Downloads the model weights the pipeline needs into models/.
+# Fetches the model weights the pipeline runs on into the Hugging Face cache.
 #
-# The weights are not in the repository (they are gitignored); they come from
-# the upstream project's release assets.
+# Nothing here has to be run: every stage downloads what it needs the first time
+# it is used. Run it to get the download over with before a chapter is waiting
+# on it, or to find out that a machine cannot reach huggingface.co before it is
+# halfway through one.
 #
 # Usage:
-#   ./fetch_models.sh          # the two required models (~258 MB)
-#   ./fetch_models.sh --force  # re-download files that already exist
+#   ./fetch_models.sh          # about 5 GB, into HF_HOME
+#   ./fetch_models.sh --force  # fetch again even if the cache has them
 #
-# Override the source with MODELS_BASE_URL, or the destination with MODELS_DIR.
+# Set HF_HOME to say where the cache is. Inside the container that is /cache,
+# which is a volume, so a rebuild does not re-download any of this.
 
 set -euo pipefail
-
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-MODELS_DIR="${MODELS_DIR:-$REPO_ROOT/models}"
-MODELS_RELEASE="${MODELS_RELEASE:-2024.01.31}"
-MODELS_BASE_URL="${MODELS_BASE_URL:-https://github.com/TareHimself/manga-translator/releases/download/$MODELS_RELEASE}"
-
-# Required by every run: bubble detection and text segmentation. The LaMa
-# cleaner fetches its own weights on first use.
-REQUIRED_MODELS=(detection.pt segmentation.pt)
 
 FORCE=0
 
@@ -29,7 +22,7 @@ for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
         -h|--help)
-            sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+            sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
             exit 0
             ;;
         *)
@@ -40,40 +33,45 @@ for arg in "$@"; do
     esac
 done
 
-models=("${REQUIRED_MODELS[@]}")
+FORCE=$FORCE python3 - <<'PY'
+import os
+import sys
 
-mkdir -p "$MODELS_DIR"
+try:
+    from huggingface_hub import hf_hub_download, snapshot_download
+except ImportError:
+    sys.exit(
+        "huggingface_hub is not installed. This runs in the environment the "
+        "pipeline runs in:\n"
+        "    pip install -r requirements.txt\n"
+        "or, for the container:\n"
+        "    docker compose run --rm manga-translator ./fetch_models.sh"
+    )
 
-for model in "${models[@]}"; do
-    dest="$MODELS_DIR/$model"
+force = os.environ.get("FORCE") == "1"
 
-    if [ -f "$dest" ] && [ "$FORCE" -eq 0 ]; then
-        echo "$model already present, skipping (use --force to re-download)"
-        continue
-    fi
+# Detection and OCR are whole model repositories, since transformers wants the
+# config and the tokenizer beside the weights; the other two are one file each.
+# The patterns keep the onnx copies of the detector, and the sample images in
+# the OCR repository, out of a cache that has no use for either.
+repositories = [
+    ("ogkalu/comic-text-and-bubble-detector", ["*.json", "*.safetensors"]),
+    ("jzhang533/PaddleOCR-VL-For-Manga", ["*.json", "*.jinja", "*.py", "*.model", "*.safetensors"]),
+]
 
-    echo "Downloading $model ..."
+files = [
+    ("ogkalu/comic-text-segmenter-yolov8m", "comic-text-segmenter.pt"),
+    ("TareHimself/AnimeMangaInpainting-torchscript", "anime_manga_lama.pt"),
+]
 
-    # Download to a temporary name so an interrupted transfer never looks like
-    # a complete model file to the next run.
-    tmp="$dest.part"
-    if ! curl -fL --progress-bar -o "$tmp" "$MODELS_BASE_URL/$model"; then
-        rm -f "$tmp"
-        echo "Failed to download $model from $MODELS_BASE_URL/$model" >&2
-        exit 1
-    fi
+for repo, patterns in repositories:
+    print(f"Fetching {repo} ...", flush=True)
+    snapshot_download(repo, allow_patterns=patterns, force_download=force)
 
-    # A truncated transfer or an HTML error page would be far smaller than any
-    # of these checkpoints, all of which run to tens of megabytes.
-    size=$(wc -c < "$tmp")
-    if [ "$size" -lt 1000000 ]; then
-        rm -f "$tmp"
-        echo "Downloaded $model is only $size bytes, which is not a model file." >&2
-        exit 1
-    fi
+for repo, name in files:
+    print(f"Fetching {name} from {repo} ...", flush=True)
+    hf_hub_download(repo, name, force_download=force)
 
-    mv "$tmp" "$dest"
-done
-
-echo
-echo "Models are in $MODELS_DIR"
+print()
+print("Weights are in", os.environ.get("HF_HOME", "the default Hugging Face cache"))
+PY

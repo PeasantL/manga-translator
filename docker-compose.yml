@@ -18,10 +18,9 @@ services:
       # that knows sends it per job and overrides this.
       - SOURCE_LANG=${SOURCE_LANG:-ja}
     volumes:
-      # The YOLO weights, fetched on first boot. A volume rather than part of
-      # the image so that rebuilding does not re-download 258 MB.
-      - models:/app/models
-      # manga-ocr and LaMa fetch their own on first use, another 600-odd MB.
+      # Every model's weights, fetched from the Hugging Face hub the first time
+      # each is used -- about 5 GB of them. A volume rather than part of the
+      # image so that rebuilding does not download them again.
       - cache:/cache
       # Scratch for the job in flight: a chapter unpacked, lettered and packed
       # again. Anything left here from a previous run is cleared at startup.
@@ -36,7 +35,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  models:
   cache:
   jobs:
 
