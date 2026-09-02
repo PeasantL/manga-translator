@@ -5,6 +5,19 @@ and draws the translation back into the bubble.
 
 Forked from [TareHimself/manga-translator](https://github.com/TareHimself/manga-translator).
 
+> **Archived.** This is no longer developed on its own. It now lives as a
+> subdirectory of the manga reader it was written for, vendored there with
+> `git subtree`: nothing ran it except that reader, and the two were coupled far
+> more tightly than two separate repositories admitted. The reader parses a
+> document this writes *inside* the translated archive, under `translator/`, to
+> let a person correct the lines — and nothing on either side checked that the
+> two still agreed about its shape.
+>
+> What is here is the final standalone state, and it works: `./run.sh` for the
+> CLI, `service.py` for the HTTP job API, `./fetch_models.sh` for the weights.
+> The reader is a private repository, so this stays the public copy of the
+> source.
+
 ## How it works
 
 A folder is one chapter. It runs through six stages, in
