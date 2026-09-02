@@ -628,6 +628,7 @@ def _redraw(
                 ],
                 drawer,
                 [(region.text_color, region.background_color) for region in page.regions],
+                [region.outlined for region in page.regions],
             )
 
             if write_image(str(drawn_dir / page.name), frame):

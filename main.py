@@ -210,6 +210,7 @@ async def stage_draw(chapter: Chapter, args):
             ],
             drawer,
             [(r.text_color, r.background_color) for r in page.regions],
+            [r.outlined for r in page.regions],
         )
 
         if write_image(os.path.join(chapter.drawn_dir, page.name), drawn):

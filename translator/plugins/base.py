@@ -67,6 +67,7 @@ class Drawable:
         frame: np.ndarray,
         backdrop: bool = False,
         page_shape: Union[tuple, None] = None,
+        outline: bool = False,
     ) -> None:
         self.color = color
         self.translation = translation
@@ -74,6 +75,11 @@ class Drawable:
         # Set when the text did not fit its bubble and is being drawn over
         # artwork instead, so the drawer knows to put something behind it.
         self.backdrop = backdrop
+        # Set for text that had no balloon to begin with. It is lettered onto
+        # the drawing itself however well it fits, so it needs a border around
+        # each glyph to be read against it -- a bubble gives its lettering that
+        # separation for free, and this is what free text has instead.
+        self.outline = outline
         # The whole page this region was cut out of. A drawer needs it because
         # a readable size is a fraction of the page rather than a count of
         # pixels: the same chapter is scanned at anything from 800 to 2400

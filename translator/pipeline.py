@@ -131,6 +131,7 @@ async def draw_page(
     translations: list[TranslatorResult],
     drawer: Drawer,
     colors: list = None,
+    outlined: list = None,
 ) -> np.ndarray:
     """Draw translations into an already cleaned page.
 
@@ -147,6 +148,11 @@ async def draw_page(
         if colors is None:
             colors = [(None, None) for _ in draw_boxes]
 
+        # A region nobody said anything about is lettered the way a balloon is,
+        # which is what every region was before free text was lettered at all.
+        if outlined is None:
+            outlined = [False for _ in draw_boxes]
+
         # Boxes that run into each other are pulled apart before anything is
         # measured against them: two balloons overlapping on the page leave two
         # interiors overlapping in the same corner, and text set in both is
@@ -159,8 +165,8 @@ async def draw_page(
         boxes = []
         to_draw = []
 
-        for index, (bbox, translation, measured) in enumerate(
-            zip(draw_boxes, translations, colors)
+        for index, (bbox, translation, measured, border) in enumerate(
+            zip(draw_boxes, translations, colors, outlined)
         ):
             # What this one has to keep off: every other region's own box, and
             # the room already given to the regions lettered before it. Without
@@ -182,6 +188,7 @@ async def draw_page(
                     translation=translation,
                     backdrop=expanded,
                     page_shape=frame.shape,
+                    outline=border,
                 )
             )
 
@@ -222,9 +229,11 @@ def align_translations(
 class PageLayout:
     """One page after cleaning, plus the text regions it contributes to the chapter.
 
-    draw_boxes, text_crops and colors are parallel and in reading order. Each
-    entry in colors is the (text, background) pair measured off the page before
-    the text was erased.
+    draw_boxes, text_crops, colors and outlined are parallel and in reading
+    order. Each entry in colors is the (text, background) pair measured off the
+    page before the text was erased; each entry in outlined says whether the
+    region had a balloon around it, since one that did not is lettered onto the
+    drawing and needs a border to be read there.
     """
 
     def __init__(
@@ -233,11 +242,15 @@ class PageLayout:
         draw_boxes: list[tuple[int, int, int, int]],
         text_crops: list[np.ndarray],
         colors: list = None,
+        outlined: list = None,
     ) -> None:
         self.frame = frame
         self.draw_boxes = draw_boxes
         self.text_crops = text_crops
         self.colors = colors if colors is not None else [(None, None) for _ in draw_boxes]
+        self.outlined = (
+            outlined if outlined is not None else [False for _ in draw_boxes]
+        )
 
 
 class FullConversion:
@@ -452,8 +465,11 @@ class FullConversion:
                             claimed.add(text_box)
                             to_translate.append(region)
                     elif cls == "text_free":
+                        # Bordered: nothing was ever drawn around this text, so
+                        # once it is lettered again it sits straight on the
+                        # artwork.
                         region = self.read_loose_text(
-                            bbox, frame, frame_clean, text_mask
+                            bbox, frame, frame_clean, text_mask, outlined=True
                         )
 
                         if region is not None:
@@ -481,6 +497,9 @@ class FullConversion:
                 if cls != "text_bubble" or bbox in claimed:
                     continue
 
+                # Not bordered, unlike free text: the balloon is still drawn
+                # on the page, it is only the detector that missed it, so this
+                # lettering has the same white around it a found one would.
                 region = self.read_loose_text(bbox, frame, frame_clean, text_mask)
 
                 if region is not None:
@@ -506,6 +525,7 @@ class FullConversion:
                 draw_boxes=[x[0] for x in to_translate],
                 text_crops=[x[1] for x in to_translate],
                 colors=[x[2] for x in to_translate],
+                outlined=[x[3] for x in to_translate],
             )
         except:
             traceback.print_exc()
@@ -554,10 +574,17 @@ class FullConversion:
         if not holds(room, middle_of(text_box)):
             room = text_box
 
-        return [room, crop, colors], text_box
+        return [room, crop, colors, False], text_box
 
-    def read_loose_text(self, bbox, frame, frame_clean, text_mask):
-        """Text with no balloon around it, lettered back into its own box."""
+    def read_loose_text(self, bbox, frame, frame_clean, text_mask, outlined=False):
+        """Text with no balloon around it, lettered back into its own box.
+
+        `outlined` says whether what is lettered here needs a border round each
+        glyph. Decided by the caller rather than here, because this reads two
+        different things: text the detector found outside any balloon, which is
+        on the artwork, and text inside a balloon the detector happened to miss,
+        which is not.
+        """
         (x1, y1, x2, y2) = bbox
 
         section = frame[y1:y2, x1:x2]
@@ -569,12 +596,17 @@ class FullConversion:
 
         colors = measure_region_colors(section, section_clean, section_mask)
 
-        return [(x1, y1, x2, y2), crop_with_margin(frame, bbox), colors]
+        return [(x1, y1, x2, y2), crop_with_margin(frame, bbox), colors, outlined]
 
     async def render_frame(self, page: "PageLayout", translations: list) -> np.ndarray:
         """Stage 6 for one page: draw the chapter's translations back into it."""
         return await draw_page(
-            page.frame, page.draw_boxes, translations, self.drawer, page.colors
+            page.frame,
+            page.draw_boxes,
+            translations,
+            self.drawer,
+            page.colors,
+            page.outlined,
         )
 
     async def clean_and_read(
