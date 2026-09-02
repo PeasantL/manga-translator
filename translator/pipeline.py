@@ -93,6 +93,20 @@ def clamp_box(box, width: int, height: int):
     return None if x2 <= x1 or y2 <= y1 else (x1, y1, x2, y2)
 
 
+def middle_of(box) -> tuple[float, float]:
+    (x1, y1, x2, y2) = box
+
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def holds(box, point) -> bool:
+    """Whether a box has a point inside it."""
+    (x1, y1, x2, y2) = box
+    x, y = point
+
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
 def crop_with_margin(frame: np.ndarray, box, margin: int = 4) -> np.ndarray:
     """A copy of what is inside a box, with a little of the page around it.
 
@@ -310,17 +324,10 @@ class FullConversion:
         one, or a tail caught on its own -- and there is nothing there to read
         or to letter.
         """
-        (bx1, by1, bx2, by2) = bubble
         best = None
 
         for box, cls, conf in detections:
-            if cls != "text_bubble":
-                continue
-
-            (x1, y1, x2, y2) = box
-            middle_x, middle_y = (x1 + x2) / 2, (y1 + y2) / 2
-
-            if not (bx1 <= middle_x <= bx2 and by1 <= middle_y <= by2):
+            if cls != "text_bubble" or not holds(bubble, middle_of(box)):
                 continue
 
             if best is None or conf > best[1]:
@@ -490,11 +497,22 @@ class FullConversion:
             make_bubble_mask(bubble_clean)
         )
 
-        return [
-            (pt1_x + x1, pt1_y + y1, pt2_x + x1, pt2_y + y1),
-            crop,
-            colors,
-        ], text_box
+        room = (pt1_x + x1, pt1_y + y1, pt2_x + x1, pt2_y + y1)
+
+        # Two balloons drawn against each other share a crop: the room inside
+        # this one is measured on a picture with part of its neighbour in it,
+        # and the widest clear rectangle in that picture can be the neighbour's.
+        # A pair of small bubbles side by side came out lettered one on top of
+        # the other that way, with the second left empty.
+        #
+        # The words that were read say which balloon is which. Room that does
+        # not hold them is not this balloon's room, and the box the original
+        # lettering filled is the answer to fall back on: it is, by definition,
+        # somewhere a line of text fits.
+        if not holds(room, middle_of(text_box)):
+            room = text_box
+
+        return [room, crop, colors], text_box
 
     def read_loose_text(self, bbox, frame, frame_clean, text_mask):
         """Text with no balloon around it, lettered back into its own box."""
