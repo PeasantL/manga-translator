@@ -145,11 +145,18 @@ class Region:
         translation: str = "",
         text_color: list[int] = None,
         background_color: list[int] = None,
+        outlined: bool = False,
     ) -> None:
         self.box = [int(v) for v in box]
         self.text = text
         self.language = language
         self.translation = translation
+        # Whether this one had a balloon around it. Free text is lettered onto
+        # the drawing, so it is given a border round each glyph to be read
+        # there. Kept in the document because a redraw has only the document to
+        # go on -- the page it draws onto has already been cleaned, and by then
+        # there is nothing left on it to say which regions had a balloon.
+        self.outlined = bool(outlined)
         # Both BGR, like everything else that came out of OpenCV, and both
         # measured off the page while the text was still there. null means the
         # cleaner found no glyphs to measure.
@@ -166,6 +173,7 @@ class Region:
             "translation": self.translation,
             "text_color": self.text_color,
             "background_color": self.background_color,
+            "outlined": self.outlined,
         }
 
     @classmethod
@@ -177,6 +185,12 @@ class Region:
             translation=data.get("translation", ""),
             text_color=data.get("text_color"),
             background_color=data.get("background_color"),
+            # Defaulted rather than required, and the schema is not bumped for
+            # it: a document written before free text was lettered has no
+            # balloon-less regions in it to be wrong about. Bumping would make
+            # every archive already in a library unredrawable, which is a
+            # steeper price than a field that reads as False.
+            outlined=data.get("outlined", False),
         )
 
 
@@ -333,7 +347,9 @@ def build_document(
     for index, (name, page) in enumerate(zip(names, pages)):
         regions = []
 
-        for box, (text_color, background_color) in zip(page.draw_boxes, page.colors):
+        for box, (text_color, background_color), outlined in zip(
+            page.draw_boxes, page.colors, page.outlined
+        ):
             # A region past the end of the OCR results is one the reader could
             # not be run over -- an empty region rather than a missing one, so
             # that the boxes still line up with what stage 6 will draw.
@@ -347,6 +363,7 @@ def build_document(
                     language=result.language if result is not None else "",
                     text_color=text_color,
                     background_color=background_color,
+                    outlined=outlined,
                 )
             )
 

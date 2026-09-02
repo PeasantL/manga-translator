@@ -88,17 +88,32 @@ class HorizontalDrawer(Drawer):
             avoid=avoid,
         )
 
-    @staticmethod
-    def stroke_for(font_size: int, should_do_bg: bool, outline: bool) -> int:
+    # How thick a glyph's border is, as a fraction of the size it is set at, in
+    # the two cases that get one. Text over bare artwork carries the heavier of
+    # them because there is no telling what is behind it; free text sits on a
+    # patch that was cleaned for it and only needs enough to hold its shape
+    # against what the cleaner painted back in.
+    OUTLINE_RATIO = 6
+    BORDER_RATIO = 14
+
+    @classmethod
+    def stroke_for(
+        cls, font_size: int, should_do_bg: bool, outline: bool, border: bool = False
+    ) -> int:
         """How thick an outline this lettering needs.
 
         Text inside a cleaned bubble takes a hairline in the bubble's own colour
         so that it never quite touches the line art. Text that outgrew its
         bubble is over the drawing itself, and needs a real outline to be read
-        against it.
+        against it. Text that never had a bubble is somewhere between the two:
+        on artwork, but on artwork chosen to be behind it, so it takes a border
+        rather than an outline.
         """
         if outline:
-            return max(2, round(font_size / 6))
+            return max(2, round(font_size / cls.OUTLINE_RATIO))
+
+        if border:
+            return max(1, round(font_size / cls.BORDER_RATIO))
 
         return 2 if should_do_bg else 0
 
@@ -179,6 +194,11 @@ class HorizontalDrawer(Drawer):
             busy = darkness >= 0.25
 
         outline = item.backdrop and not busy
+        # Free text is bordered at whatever size it came out at, fitting or
+        # not. Not folded into `outline`: that one is heavy enough to be read
+        # over an untouched drawing, and this text is sitting on a patch the
+        # cleaner painted for it.
+        border = item.outline and not outline
 
         font_size, wrapped, line_height = self.layout(
             text, frame_w, frame_h, hyphenator, min_size, max_size, spacing
@@ -191,7 +211,7 @@ class HorizontalDrawer(Drawer):
         # width on all four sides. Laid out once to find out how thick it will
         # be, then again inside what that leaves - a layout measured without it
         # is exactly a stroke too big for the room it has.
-        stroke_width = self.stroke_for(font_size, should_do_bg, outline)
+        stroke_width = self.stroke_for(font_size, should_do_bg, outline, border)
 
         if stroke_width > 0:
             font_size, wrapped, line_height = self.layout(
