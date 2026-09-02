@@ -1,4 +1,4 @@
-# Manga Translator
+# MangaTranslate
 
 Detects speech bubbles on a manga page, erases the original text, translates it,
 and draws the translation back into the bubble.

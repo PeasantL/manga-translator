@@ -45,7 +45,7 @@ except ImportError:
         "pipeline runs in:\n"
         "    pip install -r requirements.txt\n"
         "or, for the container:\n"
-        "    docker compose run --rm manga-translator ./fetch_models.sh"
+        "    docker compose run --rm mangatranslate ./fetch_models.sh"
     )
 
 force = os.environ.get("FORCE") == "1"
