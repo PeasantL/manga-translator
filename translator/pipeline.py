@@ -249,7 +249,7 @@ class FullConversion:
         ocr: Union[Ocr, None] = None,
         drawer: Union[Drawer, None] = None,
         cleaner: Union[Cleaner, None] = None,
-        translate_free_text: bool = False,
+        translate_free_text: bool = True,
         min_confidence: float = 0.4,
         device=None,
         yolo_device=None,
@@ -271,6 +271,10 @@ class FullConversion:
         self.segmentation_model = load_yolo(seg_model)
         self.detection_model, self.detect_processor = load_detector(detect_model, device)
 
+        # Whether text the detector found in no balloon -- narration boxes,
+        # signs, sound effects set in type -- is read and lettered along with
+        # the dialogue. Off, none of it is touched at all: see
+        # process_ml_results for why the two go together.
         self.translate_free_text = translate_free_text
         # Below this a detection is not reported at all. The detector answers
         # with a fixed number of guesses however little is on the page, so the
@@ -372,27 +376,48 @@ class FullConversion:
         # There is no middle to speak of -- on the sample pages it is 60% of the
         # box or none of it -- so where the line falls between them hardly
         # matters.
-        for bbox, cls, conf in detections:
+        #
+        # Whatever survives that is what the rest of the page is worked out
+        # from, so that erasing and lettering can never disagree about a box.
+        # They used to: the mask was filled in here for every free text box the
+        # segmenter backed, while the reading below was behind a flag nothing
+        # ever set, so free text was painted out and then left blank.
+        kept = []
+
+        for detection in detections:
+            bbox, cls, conf = detection
+
             if cls != "text_free":
+                kept.append(detection)
                 continue
 
             (x1, y1, x2, y2) = bbox
             marked = text_mask[y1:y2, x1:x2]
 
-            if marked.size > 0 and (marked > 0).mean() >= FREE_TEXT_COVERAGE:
-                cv2.rectangle(text_mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+            if marked.size == 0 or (marked > 0).mean() < FREE_TEXT_COVERAGE:
+                continue
+
+            # Nothing is erased that is not going to be lettered again. With
+            # free text left untranslated the box is dropped whole: an
+            # untouched sound effect reads, a blank patch where one was does
+            # not.
+            if not self.translate_free_text:
+                continue
+
+            cv2.rectangle(text_mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+            kept.append(detection)
 
         # The cleaner works a window at a time, and these are the windows: where
         # the detector found lettering. A balloon is not one of them, because the
         # text box inside it already is and the rest of a balloon is the empty
         # white around the words.
-        windows = [d for d in detections if d[1] in ("text_bubble", "text_free")]
+        windows = [d for d in kept if d[1] in ("text_bubble", "text_free")]
 
         frame_clean, text_mask = await self.cleaner(
             frame=frame, mask=text_mask, detection_results=windows
         )
 
-        return frame, frame_clean, text_mask, detections
+        return frame, frame_clean, text_mask, kept
 
     async def prepare_frame(self, detections, seg_result, input_frame) -> "PageLayout":
         """Stages 1 to 3 for one page: detect, clean, and collect its text regions.
@@ -426,7 +451,7 @@ class FullConversion:
                         if region is not None and text_box not in claimed:
                             claimed.add(text_box)
                             to_translate.append(region)
-                    elif cls == "text_free" and self.translate_free_text:
+                    elif cls == "text_free":
                         region = self.read_loose_text(
                             bbox, frame, frame_clean, text_mask
                         )
